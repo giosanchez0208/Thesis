@@ -1,0 +1,9 @@
+osmnx
+networkx
+geopandas
+folium
+matplotlib
+pygame
+pandas
+joblib
+numpy
