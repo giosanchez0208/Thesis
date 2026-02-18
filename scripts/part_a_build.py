@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 import argparse
 import json
 import yaml
+import osmnx as ox
 
 from src.part_a.osm import build_iligan_graphs
 from src.part_a.routes import load_routes_and_snap
@@ -65,6 +66,15 @@ def main() -> None:
         out_dir=processed_dir,
     )
 
+    # 4.5) Export GeoPackage for viewing nodes/edges in QGIS
+    results_dir = Path(cfg.get("paths", {}).get("results_dir", "results"))
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    drive_nodes_gdf, drive_edges_gdf = ox.graph_to_gdfs(drive_G)
+    drive_gpkg = results_dir / "iligan_drive.gpkg"
+    drive_nodes_gdf.to_file(drive_gpkg, layer="nodes", driver="GPKG", mode="w")
+    drive_edges_gdf.to_file(drive_gpkg, layer="edges", driver="GPKG", mode="a")
+
     # 5) Figures
     plot_road_network(
         drive_G=drive_G,
@@ -91,6 +101,7 @@ def main() -> None:
     print(f"- Graphs:   {graphs_dir}")
     print(f"- Arrays:   {processed_dir / 'nodes.csv'} and {processed_dir / 'edges.csv'}")
     print(f"- Figures:  {figures_dir}")
+    print(f"- GeoPackage: {drive_gpkg}")
 
 
 if __name__ == "__main__":

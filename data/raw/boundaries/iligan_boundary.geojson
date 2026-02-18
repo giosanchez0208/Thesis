@@ -1,8 +1,0 @@
-{
-"type": "FeatureCollection",
-"name": "iligan_boundary",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-"features": [
-{ "type": "Feature", "properties": { "bbox_west": 124.2532441, "bbox_south": 8.2441817, "bbox_east": 124.2554234, "bbox_north": 8.2461699, "place_id": 240987879, "osm_type": "way", "osm_id": 1228752487, "lat": 8.2454672, "lon": 124.2542936, "class": "landuse", "type": "construction", "place_rank": 24, "importance": 0.080052430762188112, "addresstype": "construction", "name": "SM City Iligan", "display_name": "SM City Iligan, Tambo, Santo Rosario, Iligan, Northern Mindanao, 9200, Philippines" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 124.2532441, 8.2458142 ], [ 124.2536585, 8.2441817 ], [ 124.2553335, 8.2448467 ], [ 124.2550868, 8.2451387 ], [ 124.2554234, 8.2457957 ], [ 124.2545584, 8.2459961 ], [ 124.2536679, 8.2461699 ], [ 124.2532441, 8.2458142 ] ] ] } }
-]
-}
