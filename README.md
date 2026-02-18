@@ -70,3 +70,38 @@ configs/part_a.yaml controls:
 ```bash
 python3 scripts/part_a_build.py --config configs/part_a.yaml
 ```
+
+## Output Directories
+
+- **Graphs:** `data/processed/graphs`
+- **Arrays:**  
+  - `data/processed/nodes.csv`  
+  - `data/processed/edges.csv`
+- **Figures:** `results/figures`
+
+## Generated Files
+
+### Graphs
+
+- `data/processed/graphs/iligan_walk.graphml`
+- `data/processed/graphs/iligan_drive.graphml`
+
+### Travel Graph Arrays
+
+- `data/processed/nodes.csv`
+- `data/processed/edges.csv`
+- `data/processed/part_a_config_used.json`
+- *(Optional)* `data/processed/index_maps.json`  
+  > Depends on your export implementation.
+
+### Figures
+
+- `results/figures/fig_iligan_road_network.png`
+- `results/figures/fig_iligan_travel_graph.png`
+
+## Optional (For QGIS Viewing)
+
+If GeoPackages are exported:
+
+- `results/gpkg/iligan_drive.gpkg`  
+  - Layers: `nodes`, `edges`
