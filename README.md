@@ -1,107 +1,64 @@
-# Thesis Project — Iligan City Network + Travel Graph (Part A → Part B)
+## Thesis Project — Iligan City Multimodal Transport Model
 
-Part A produces the core datasets you will use in Part B:
-
-- **OSM road networks**
-  - Walk network graph
-  - Drive network graph
-- **Route stops/terminals**
-  - Loaded from a JSON file (dummy for now, replace with real data later)
-- **Travel graph arrays**
-  - `nodes.csv`
-  - `edges.csv`
-  - `index maps` for consistent node indexing
-- **Figures**
-  - Road network image (OSM drive network + stop markers)
-  - Travel graph image
-
-**Important:** The **road network** is the general OSM road network — not the jeepney route geometry. The jeepney-related part is represented by your **stops/terminals** (and later by real route geometry or computed drive paths).
+Current Stage: **Data Synthesis & Network Generation** phase. Transforms raw OpenStreetMap (OSM) data and local transit information into a unified mathematical graph for routing optimization.
 
 ---
 
-## Requirements
+### Core Deliverables
 
-### Python
-- Python **3.11**
+The execution of the model generation script produces the foundational datasets required for the GA-ACO agent-based simulation:
 
-### Python Packages (Minimum)
-- osmnx>=1.8.1
-- networkx>=3.2
-- geopandas>=0.14
-- shapely>=2.0
-- pyproj>=3.6
-- pandas>=2.1
-- numpy>=1.26
-- pyyaml>=6.0
-- matplotlib>=3.8
-- scikit-learn>=1.3
+* **Spatial Road Networks:** High-fidelity walking and driving graphs extracted from OSM.
+* **Transit Infrastructure:** Jeepney stops and terminal nodes mapped directly onto the walking graph.
+* **Multimodal Travel Graph:** A "generalized cost" network exported as `nodes.csv` and `edges.csv`, including weighted edges for walking, waiting, and transferring.
+* **Analytical Visualizations:** Spatial plots of the road network and the resulting abstract travel graph.
 
-### Strongly Recommended Add-ons
-These prevent common runtime issues and improve exporting:
-- **pyogrio** (faster + more reliable GeoPackage writing)
-- **rtree** (spatial index speedups)
+---
 
-Install:
+### Requirements & Environment
+
+* **Runtime:** Python 3.11
+* **Essential Libraries:** `osmnx`, `networkx`, `geopandas`, `shapely`, `pyyaml`, `scikit-learn`.
+* **Performance Boosters:** `pyogrio` for faster GeoPackage writing and `rtree` for spatial indexing.
 
 ```bash
-pip install -r requirements.txt
-pip install pyogrio rtree
-```
-
-## Setup
-
-```bash
+# Environment Setup
 python3 -m venv Thesis_venv
 source Thesis_venv/bin/activate
-pip install -r requirements.tx
+pip install -r requirements.txt
+pip install pyogrio rtree
+
 ```
 
-## Configuration
+---
 
-configs/part_a.yaml controls:
+### Execution & Configuration
 
-- City query (Iligan City)
-- Output folders
-- Routes JSON path
-- Travel graph weights and options
+The system relies on a centralized configuration file to define city boundaries, weight parameters for the travel model (e.g., `beta_wait`, `beta_walk`), and file paths.
 
-## Run Part A
+**Configuration File:** `configs/iligan_transport_config.yaml`
+
+**To generate the model:**
 
 ```bash
-python3 scripts/part_a_build.py --config configs/part_a.yaml
+python3 scripts/build_network_model.py --config configs/iligan_transport_config.yaml
+
 ```
 
-## Output Directories
+---
 
-- **Graphs:** `data/processed/graphs`
-- **Arrays:**  
-  - `data/processed/nodes.csv`  
-  - `data/processed/edges.csv`
-- **Figures:** `results/figures`
+### Data Output Architecture
 
-## Generated Files
+| Category | File Path | Description |
+| --- | --- | --- |
+| **Network Graphs** | `data/processed/graphs/iligan_*.graphml` | XML-based graphs for Walk and Drive networks. |
+| **Model Arrays** | `data/processed/nodes.csv` & `edges.csv` | Flat files representing the multimodal travel graph. |
+| **Metadata** | `data/processed/config_used.json` | A snapshot of the parameters used for reproducibility. |
+| **GIS Assets** | `results/gpkg/iligan_drive.gpkg` | GeoPackage layers (nodes/edges) for spatial validation in QGIS. |
+| **Visuals** | `results/figures/fig_*.png` | Mapped visualizations of the road network and travel logic. |
 
-### Graphs
+---
 
-- `data/processed/graphs/iligan_walk.graphml`
-- `data/processed/graphs/iligan_drive.graphml`
+### Implementation Note
 
-### Travel Graph Arrays
-
-- `data/processed/nodes.csv`
-- `data/processed/edges.csv`
-- `data/processed/part_a_config_used.json`
-- *(Optional)* `data/processed/index_maps.json`  
-  > Depends on your export implementation.
-
-### Figures
-
-- `results/figures/fig_iligan_road_network.png`
-- `results/figures/fig_iligan_travel_graph.png`
-
-## Optional (For QGIS Viewing)
-
-If GeoPackages are exported:
-
-- `results/gpkg/iligan_drive.gpkg`  
-  - Layers: `nodes`, `edges`
+The **road network** provides the physical constraints of Iligan City, while the **travel graph** integrates the specific behavior of the jeepney system. By separating the physical geometry from the transit logic, you can iterate on route optimizations in the simulation phase without re-downloading the entire city map.
