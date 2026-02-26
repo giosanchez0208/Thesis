@@ -82,6 +82,17 @@ data/raw/osm_cache/
 data/raw/osm/
 *.osm.pbf
 
+<<<<<<< HEAD
+=======
+# -------------------------------------------------
+# Generated thesis outputs (regeneratable)
+# -------------------------------------------------
+data/processed/
+data/route_systems
+results/runs/
+results/figures/
+
+>>>>>>> 089228c (feat: passenger spawning/despawning via weighted spatial distribution)
 # If you have large exports
 *.graphml
 *.gpkg
