@@ -86,6 +86,7 @@ data/raw/osm/
 # Generated thesis outputs (regeneratable)
 # -------------------------------------------------
 data/processed/
+data/route_systems
 results/runs/
 results/figures/
 

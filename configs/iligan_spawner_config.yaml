@@ -1,0 +1,37 @@
+data:
+  nodes_csv: "data/processed/nodes.csv"
+  edges_csv: "data/processed/edges.csv"
+  output_iter_folder: "data/route_systems"
+
+spawner:
+  base_demand_rate_per_hour: 200
+  dt_minutes: 1.0
+  max_wait_minutes: 120
+  seed: 42
+
+weights:
+  w_pop: 0.5
+  w_poi: 0.2
+  w_kde: 0.3
+  kde_bandwidth_m: 500.0
+  beta_distance: 0.002
+
+sampling:
+  min_distance_m: 200.0
+  allow_same_node_destination: false
+
+output:
+  save_spawn_events_csv: true
+  spawn_events_filename: "iteration_spawns.csv"
+  save_all_timesteps_as: "append"
+
+  save_json: true
+  json_filename: "iteration_spawns.json"
+
+  save_gpkg: true
+  gpkg_filename: "iteration_passengers.gpkg"
+  gpkg_layers_prefix: "iter"
+
+runtime:
+  log_level: "INFO"
+  profile_kde: false
