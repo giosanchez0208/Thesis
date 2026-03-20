@@ -82,13 +82,6 @@ data/raw/osm_cache/
 data/raw/osm/
 *.osm.pbf
 
-# -------------------------------------------------
-# Generated thesis outputs (regeneratable)
-# -------------------------------------------------
-data/processed/
-results/runs/
-results/figures/
-
 # If you have large exports
 *.graphml
 *.gpkg
