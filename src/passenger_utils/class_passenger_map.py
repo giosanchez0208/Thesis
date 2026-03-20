@@ -1,9 +1,15 @@
 import pandas as pd
 import numpy as np
+import os
 
 class PassengerMap:
-    def __init__(self, csv_path):
-
+    def __init__(self, csv_path=None):
+        if csv_path is None:
+            csv_path = os.path.join(
+                os.path.dirname(__file__), 
+                '../../data/processed/nodes_with_tomtom_data_imputed.csv'
+            )
+            
         self.df = pd.read_csv(csv_path, dtype={
             'base_osmid': 'int64',
             'lat': 'float64',

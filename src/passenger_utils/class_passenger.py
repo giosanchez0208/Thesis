@@ -1,13 +1,9 @@
 from class_passenger_map import PassengerMap
-import os
 
 class Passenger:
-    def __init__(self, csv_path=None):
-        if csv_path is None:
-            # Default path relative to this file
-            csv_path = os.path.join(os.path.dirname(__file__), '../../data/processed/nodes_with_tomtom_data_imputed.csv')
-        
-        self.w = PassengerMap(csv_path)
+    def __init__(self):
+
+        self.w = PassengerMap()
         
         # Sample start_pos
         start_sample = self.w.generate_nodes(n_points=1)
@@ -36,7 +32,7 @@ class Passenger:
         return float(self.end_lat), float(self.end_lon)
 
 if __name__ == "__main__":
-    # Example usage
+
     passenger = Passenger()
     print(f"Passenger start position: {passenger.start_pos}")
     print(f"Passenger end position: {passenger.end_pos}")
