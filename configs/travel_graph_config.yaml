@@ -1,0 +1,66 @@
+# Travel Graph Construction Configuration
+# Settings for building the whole-Iligan layered travel graph
+
+# ============================
+# Study Area Settings
+# ============================
+study_area:
+  # Primary queries to resolve study area boundary
+  place_queries:
+    - "Iligan City, Philippines"
+  
+  # Fallback point-based query if polygon fails
+  point_fallback_query: "Iligan City, Philippines"
+  
+  # Radius (meters) for point-based graph extraction
+  point_fallback_distance_m: 30000
+
+# ============================
+# Network Extraction Settings
+# ============================
+network:
+  # Decimal places for coordinate rounding (affects node matching)
+  coord_rounding: 7
+  
+  # Maximum snap distance (meters) for matching walk↔ride interlayer connections
+  max_interlayer_snap_distance_m: 80.0
+  
+  # Whether to simplify graphs (merge sequential edges with only 2 nodes)
+  simplify_graphs: true
+  
+  # Whether to retain disconnected components (islands)
+  retain_all_components: true
+
+# ============================
+# Travel Graph Weights
+# ============================
+# Used by TravelGraphManager for shortest-path calculations
+# β_walk:      multiplier for walking edges (user disutility per meter)
+# β_ride:      multiplier for riding edges (vehicle cost per meter)
+# β_wait:      flat disutility for boarding a vehicle
+# β_transfer:  flat disutility for changing vehicles
+weights:
+  # Primary weights (used in full-ride manager sampling)
+  full_ride_manager:
+    walk_wt: 0.0142
+    ride_wt: 0.0071
+    wait_wt: 8.5
+    transfer_wt: 14.2
+  
+  # Route-restricted manager weights (replace with calibrated survey estimates)
+  route_restricted_manager:
+    walk_wt: 2
+    ride_wt: 1
+    wait_wt: 1
+    transfer_wt: 2
+
+# ============================
+# Random Route Generation
+# ============================
+# Used in generate_random_ride_loop() for synthetic route creation
+# 20 routes will be generated with seeds 0-19 for reproducibility
+route_generation:
+  min_nodes: 40
+  max_nodes: 160  # Allows diverse route lengths
+  num_routes: 20
+  deterministic: true  # Uses sequential seeds 0-19
