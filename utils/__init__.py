@@ -1,4 +1,11 @@
-"""Travel graph construction and management module."""
+"""
+Utilities package for thesis project.
+
+Provides:
+- Travel graph analysis and routing via TravelGraphManager
+- JeepneyRoute for defining jeepney services
+- Passenger generation and analysis tools
+"""
 
 from .travel_graph import (
     TravelGraphManager,
