@@ -55,6 +55,17 @@ weights:
     transfer_wt: 2
 
 # ============================
+# Simulation Velocities
+# ============================
+# Used in passenger simulation for movement speed
+velocities:
+  # Jeep velocity in meters per second
+  v_jeep: 10.0  # ~36 km/h typical city speed
+  
+  # Passenger velocity in meters per second (walking speed)
+  v_passenger: 1.4  # ~5 km/h typical walking speed
+
+# ============================
 # Random Route Generation
 # ============================
 # Used in generate_random_ride_loop() for synthetic route creation

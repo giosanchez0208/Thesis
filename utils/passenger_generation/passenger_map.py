@@ -7,18 +7,16 @@ class PassengerMap:
         if csv_path is None:
             csv_path = os.path.join(
                 os.path.dirname(__file__), 
-                '../../data/processed/nodes_with_tomtom_data_imputed.csv'
+                '../../data/iligan_node_with_traffic_data.csv'
             )
             
-        self.df = pd.read_csv(csv_path, dtype={
-            'base_osmid': 'int64',
-            'lat': 'float64',
-            'lon': 'float64',
-            'bc': 'float64',
-            'bldg_density': 'float64',
-            'traffic_index': 'float64',
-            'ADT_prop': 'float64'
-        })
+        # Load CSV with flexible dtype handling (only apply to columns that exist)
+        df_temp = pd.read_csv(csv_path)
+        dtype_spec = {}
+        for col in ['base_osmid', 'lat', 'lon', 'bc', 'bldg_density', 'traffic_index', 'ADT_prop']:
+            if col in df_temp.columns:
+                dtype_spec[col] = 'float64' if col != 'base_osmid' else 'int64'
+        self.df = pd.read_csv(csv_path, dtype=dtype_spec)
         
         # Model coefficients
         self.betas = {
