@@ -1,5 +1,7 @@
 """Travel graph construction and management module."""
 
+from .travel_graph_visualizer import TravelGraphVisualizer, visualize_travel_graph
+
 from .travel_graph import (
     TravelGraphManager,
     JeepneyRoute,
@@ -47,4 +49,7 @@ __all__ = [
     "add_edges_to_digraph",
     "compute_v_to_outgoing",
     "attach_accessible_nodes",
+    # Visualizer
+    "TravelGraphVisualizer",
+    "visualize_travel_graph",
 ]
