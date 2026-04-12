@@ -886,6 +886,29 @@ class TravelGraphManager:
             "after 300 attempts."
         )
 
+    # ── Method 1b: find_nearest_node ───────────────────────────────────────
+
+    def find_nearest_node(self, lat: float, lon: float, layer: str = None) -> str:
+        if self._nodes_df is None:
+            raise ValueError("Nodes dataframe not loaded. Provide nodes_csv to TravelGraphManager.")
+        
+        # Filter by layer if specified
+        if layer is not None:
+            nodes = self._nodes_df[self._nodes_df['layer'] == layer].copy()
+        else:
+            nodes = self._nodes_df.copy()
+        
+        if len(nodes) == 0:
+            return None
+        
+        # Calculate distances using Euclidean distance
+        # (OK for small areas, more precise with haversine if needed)
+        distances = ((nodes['lat'] - lat)**2 + (nodes['lon'] - lon)**2)**0.5
+        nearest_idx = distances.idxmin()
+        nearest_node = nodes.loc[nearest_idx]
+        
+        return nearest_node['node_id']
+
     # ── Method 2: calculate_shortest_path ───────────────────────────────────
 
     def calculate_shortest_path(self, u: str, v: str) -> list:

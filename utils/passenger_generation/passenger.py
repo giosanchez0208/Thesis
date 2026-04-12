@@ -107,22 +107,7 @@ class Passenger:
     
     def update(self, new_node_id: str, new_lat: float, new_lon: float, 
                state: PassengerState = None, dt: float = 0.0) -> None:
-        """
-        Update passenger position and state during simulation.
-        
-        Parameters
-        ----------
-        new_node_id : str
-            New current node ID
-        new_lat : float
-            New latitude
-        new_lon : float
-            New longitude
-        state : PassengerState, optional
-            New state (if None, state unchanged)
-        dt : float
-            Time increment in seconds
-        """
+ 
         self.curr_node_id = new_node_id
         self.curr_lat = new_lat
         self.curr_lon = new_lon
@@ -149,6 +134,7 @@ class Passenger:
         """
         Calculate shortest path from start to end using travel graph.
         Uses the travel graph's Dijkstra shortest path algorithm.
+        Maps passenger coordinates to nearest travel graph nodes.
         
         Returns
         -------
@@ -160,14 +146,27 @@ class Passenger:
             return False
         
         try:
-            # Get shortest path edges
+            # Find nearest travel graph nodes to passenger start/end coordinates
+            # The travel graph nodes are geo-located and we match by proximity
+            start_graph_node_id = self.travel_graph_mgr.find_nearest_node(
+                self.start_lat, self.start_lon, layer="start_walk"
+            )
+            end_graph_node_id = self.travel_graph_mgr.find_nearest_node(
+                self.end_lat, self.end_lon, layer="end_walk"
+            )
+            
+            if not start_graph_node_id or not end_graph_node_id:
+                print(f"⚠ Could not find start/end nodes in travel graph")
+                return False
+            
+            # Get shortest path edges using travel graph node IDs
             self.shortest_path_edges = self.travel_graph_mgr.calculate_shortest_path(
-                self.start_node_id, 
-                self.end_node_id
+                start_graph_node_id, 
+                end_graph_node_id
             )
             
             # Reconstruct nodes from edges
-            self.shortest_path_nodes = [self.start_node_id]
+            self.shortest_path_nodes = [start_graph_node_id]
             for edge_id in self.shortest_path_edges:
                 edge = self.travel_graph_mgr.get_edge(edge_id)
                 if edge:
@@ -183,14 +182,6 @@ class Passenger:
             return False
     
     def get_next_path_node(self):
-        """
-        Get the next node in the shortest path.
-        
-        Returns
-        -------
-        tuple
-            (node_id, lat, lon) or (None, None, None) if path exhausted
-        """
         if not self.shortest_path_nodes or self.current_path_index >= len(self.shortest_path_nodes):
             return None, None, None
         
