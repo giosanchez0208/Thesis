@@ -1,8 +1,9 @@
 from .passenger_map import PassengerMap
 from enum import Enum
+from typing import List, Optional
 
 class PassengerState(Enum):
-    """Finite State Machine states for passengerpassenger journey."""
+    """Finite State Machine states for passenger journey."""
     WAITING_TO_WALK = "waiting_to_walk"      # At start position, before walking to boarding point
     WALKING_TO_BOARD = "walking_to_board"    # Walking from start to boarding point
     WAITING_AT_STATION = "waiting_at_station"  # At boarding point, waiting for jeep
@@ -86,6 +87,12 @@ class Passenger:
         self.state = PassengerState.WAITING_TO_WALK
         self.journey_path = []  # List of node IDs traversed
         
+        # Pathfinding and routing
+        self.travel_graph_mgr = None  # Will be set by simulation
+        self.shortest_path_edges = []  # List of edge IDs from start to end
+        self.shortest_path_nodes = []  # List of node IDs from start to end
+        self.current_path_index = 0  # Current position in shortest path
+        
     def get_start_lat_lon(self):
         """Get starting latitude and longitude."""
         return float(self.start_lat), float(self.start_lon)
@@ -126,6 +133,89 @@ class Passenger:
         
         if new_node_id not in self.journey_path:
             self.journey_path.append(new_node_id)
+    
+    def set_travel_graph(self, travel_graph_mgr) -> None:
+        """
+        Set the travel graph manager for pathfinding.
+        
+        Parameters
+        ----------
+        travel_graph_mgr : TravelGraphManager
+            The manager instance with routing capabilities
+        """
+        self.travel_graph_mgr = travel_graph_mgr
+    
+    def calculate_shortest_path(self) -> bool:
+        """
+        Calculate shortest path from start to end using travel graph.
+        Uses the travel graph's Dijkstra shortest path algorithm.
+        
+        Returns
+        -------
+        bool
+            True if path found successfully, False otherwise
+        """
+        if self.travel_graph_mgr is None:
+            print("⚠ Warning: Travel graph not set for pathfinding")
+            return False
+        
+        try:
+            # Get shortest path edges
+            self.shortest_path_edges = self.travel_graph_mgr.calculate_shortest_path(
+                self.start_node_id, 
+                self.end_node_id
+            )
+            
+            # Reconstruct nodes from edges
+            self.shortest_path_nodes = [self.start_node_id]
+            for edge_id in self.shortest_path_edges:
+                edge = self.travel_graph_mgr.get_edge(edge_id)
+                if edge:
+                    self.shortest_path_nodes.append(edge.v)
+            
+            self.current_path_index = 0
+            print(f"✓ Shortest path calculated: {len(self.shortest_path_edges)} edges, "
+                  f"{len(self.shortest_path_nodes)} nodes")
+            return True
+            
+        except Exception as e:
+            print(f"⚠ Error calculating shortest path: {e}")
+            return False
+    
+    def get_next_path_node(self):
+        """
+        Get the next node in the shortest path.
+        
+        Returns
+        -------
+        tuple
+            (node_id, lat, lon) or (None, None, None) if path exhausted
+        """
+        if not self.shortest_path_nodes or self.current_path_index >= len(self.shortest_path_nodes):
+            return None, None, None
+        
+        node_id = self.shortest_path_nodes[self.current_path_index]
+        self.current_path_index += 1
+        
+        # Look up coordinates
+        node_row = self.passenger_map.df[
+            self.passenger_map.df['base_osmid'] == int(node_id.split('_')[-1]) if '_' in node_id else False
+        ]
+        
+        if len(node_row) > 0:
+            lat = node_row['lat'].iloc[0]
+            lon = node_row['lon'].iloc[0]
+            return node_id, lat, lon
+        
+        return node_id, None, None
+    
+    def is_path_complete(self) -> bool:
+        """Check if the passenger has traversed the entire shortest path."""
+        return self.current_path_index >= len(self.shortest_path_nodes)
+    
+    def reset_path_index(self) -> None:
+        """Reset path traversal index (e.g., for restart)."""
+        self.current_path_index = 0
     
     def __repr__(self) -> str:
         return (
