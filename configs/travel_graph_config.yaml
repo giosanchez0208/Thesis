@@ -66,6 +66,23 @@ velocities:
   v_passenger: 1.4  # ~5 km/h typical walking speed
 
 # ============================
+# Simulation Controls
+# ============================
+simulation:
+  # Default fleet assumptions when a route-specific size is not supplied
+  default_num_jeeps: 3
+  headway_s: 60.0
+
+# ============================
+# Passenger Generation
+# ============================
+passenger_generation:
+  # Spawn passengers every couple of dt in the notebook-level experiments
+  interval_dt: 2.0
+  mean_per_interval: 120
+  std_per_interval: 30
+
+# ============================
 # Random Route Generation
 # ============================
 # Used in generate_random_ride_loop() for synthetic route creation

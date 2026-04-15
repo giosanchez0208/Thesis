@@ -105,3 +105,5 @@ results/figures/
 !results/runs/.gitkeep
 !results/figures/.gitkeep
 !results/figures/README.md
+
+segments_for_references/

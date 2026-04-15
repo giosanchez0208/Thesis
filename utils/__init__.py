@@ -4,7 +4,7 @@ Utilities package for thesis project.
 Provides:
 - Travel graph analysis and routing via TravelGraphManager
 - JeepneyRoute for defining jeepney services
-- Passenger generation and analysis tools
+- Passenger generation, jeep movement, and tandem simulation tools
 """
 
 from .travel_graph import (
@@ -31,6 +31,16 @@ from .travel_graph import (
     attach_accessible_nodes,
 )
 
+from .passenger_generation import (
+    PassengerMap,
+    Passenger,
+    PassengerState,
+    Jeep,
+    JeepState,
+    SimulationConfig,
+    Simulation,
+)
+
 __all__ = [
     # Main classes
     "TravelGraphManager",
@@ -54,4 +64,11 @@ __all__ = [
     "add_edges_to_digraph",
     "compute_v_to_outgoing",
     "attach_accessible_nodes",
+    "PassengerMap",
+    "Passenger",
+    "PassengerState",
+    "Jeep",
+    "JeepState",
+    "SimulationConfig",
+    "Simulation",
 ]

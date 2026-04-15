@@ -27,6 +27,7 @@ class PassengerMap:
             'beta_4': 0.1,   # L_mix - Land-use mix (optional) 
             'epsilon': 0.05  # Error term 
         }
+        self.df['v_ped'] = self.calculate_v_ped(self.df)
 
     def calculate_v_ped(self, df=None):
 
@@ -45,9 +46,6 @@ class PassengerMap:
 
     def generate_nodes(self, n_points=10000):
  
-        # Calculate V_ped for the dataframe
-        self.df['v_ped'] = self.calculate_v_ped(self.df)
-        
         # Normalize V_ped values to create a spatial probability distribution 
         weights = self.df['v_ped'] / self.df['v_ped'].sum()
         

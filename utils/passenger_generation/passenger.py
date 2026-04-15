@@ -20,7 +20,13 @@ class Passenger:
     The passenger follows a path calculated by the TravelGraphManager and tracks
     their position as they move through the travel graph.
     """
-    def __init__(self, start_node_id: str = None, end_node_id: str = None):
+    def __init__(
+        self,
+        start_node_id: str = None,
+        end_node_id: str = None,
+        passenger_map: PassengerMap = None,
+        verbose: bool = False,
+    ):
         """
         Parameters
         ----------
@@ -29,15 +35,19 @@ class Passenger:
         end_node_id : str, optional
             Destination node ID. If None, randomly sampled (different from start).
         """
-        try:
-            self.passenger_map = PassengerMap()
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"Passenger map data not found. Expected file at: {e}\n"
-                "Make sure the data files are in the correct location."
-            ) from e
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize PassengerMap: {e}") from e
+        self.verbose = bool(verbose)
+        if passenger_map is None:
+            try:
+                self.passenger_map = PassengerMap()
+            except FileNotFoundError as e:
+                raise FileNotFoundError(
+                    f"Passenger map data not found. Expected file at: {e}\n"
+                    "Make sure the data files are in the correct location."
+                ) from e
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize PassengerMap: {e}") from e
+        else:
+            self.passenger_map = passenger_map
         
         # Sample or use provided start/end positions
         if start_node_id is None:
@@ -142,7 +152,8 @@ class Passenger:
             True if path found successfully, False otherwise
         """
         if self.travel_graph_mgr is None:
-            print("⚠ Warning: Travel graph not set for pathfinding")
+            if self.verbose:
+                print("Warning: travel graph not set for pathfinding")
             return False
         
         try:
@@ -156,7 +167,8 @@ class Passenger:
             )
             
             if not start_graph_node_id or not end_graph_node_id:
-                print(f"⚠ Could not find start/end nodes in travel graph")
+                if self.verbose:
+                    print("Warning: could not find start or end nodes in travel graph")
                 return False
             
             # Get shortest path edges using travel graph node IDs
@@ -173,12 +185,16 @@ class Passenger:
                     self.shortest_path_nodes.append(edge.v)
             
             self.current_path_index = 0
-            print(f"✓ Shortest path calculated: {len(self.shortest_path_edges)} edges, "
-                  f"{len(self.shortest_path_nodes)} nodes")
+            if self.verbose:
+                print(
+                    f"Shortest path calculated: {len(self.shortest_path_edges)} edges, "
+                    f"{len(self.shortest_path_nodes)} nodes"
+                )
             return True
             
         except Exception as e:
-            print(f"⚠ Error calculating shortest path: {e}")
+            if self.verbose:
+                print(f"Error calculating shortest path: {e}")
             return False
     
     def get_next_path_node(self):

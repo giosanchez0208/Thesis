@@ -1198,7 +1198,7 @@ if (allCoords.length) map.fitBounds(allCoords, {{padding:[40,40]}});
 </html>"""
 
         out_path.write_text(html, encoding="utf-8")
-        print(f"Saved journey map → {out_path}")
+        print(f"Saved journey map to {out_path}")
         return out_path
 
     def __repr__(self) -> str:

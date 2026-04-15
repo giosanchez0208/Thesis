@@ -92,7 +92,7 @@ class TravelGraphVisualizer:
         out.parent.mkdir(parents=True, exist_ok=True)
         html = self._build_html()
         out.write_text(html, encoding="utf-8")
-        print(f"✓ Travel graph explorer saved → {out}")
+        print(f"Travel graph explorer saved to {out}")
         return out
 
     # ── Private: data extraction ─────────────────────────────────────────────
