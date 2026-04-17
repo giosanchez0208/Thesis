@@ -24,6 +24,10 @@ Re-exports the main travel graph and passenger utilities. It exposes:
 
 - `TravelGraphManager`
 - `JeepneyRoute`
+- `JeepneySystem`
+- `JeepneyRouteScrubber`
+- `TravelGraphVisualizer`
+- `visualize_travel_graph`
 - passenger map, passenger, jeep, and tandem simulation classes
 - travel graph construction helpers
 
@@ -33,6 +37,8 @@ Re-exports the travel graph core plus the visualizer:
 
 - `TravelGraphManager`
 - `JeepneyRoute`
+- `JeepneySystem`
+- `JeepneyRouteScrubber`
 - `TravelGraphVisualizer`
 - `visualize_travel_graph`
 - graph construction helpers

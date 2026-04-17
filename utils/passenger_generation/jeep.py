@@ -35,6 +35,8 @@ class Jeep:
         self,
         jeep_id: str,
         route_nodes: List[Tuple[float, float]],
+        route_id: Optional[str] = None,
+        route_node_ids: Optional[List[str]] = None,
         v_jeep: float = 10.0
     ):
         """Initialize jeepney with route and velocity."""
@@ -42,7 +44,9 @@ class Jeep:
             raise ValueError("Route must have at least 2 nodes")
         
         self.jeep_id = str(jeep_id)
+        self.route_id = str(route_id) if route_id is not None else None
         self.route_nodes = list(route_nodes)  # [(lat, lon), ...]
+        self.route_node_ids = list(route_node_ids) if route_node_ids is not None else []
         self.v_jeep = float(v_jeep)  # meters per second
         
         # Current position (starts at first node)

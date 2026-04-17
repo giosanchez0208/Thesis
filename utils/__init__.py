@@ -4,12 +4,17 @@ Utilities package for thesis project.
 Provides:
 - Travel graph analysis and routing via TravelGraphManager
 - JeepneyRoute for defining jeepney services
+- Travel graph HTML visualization helpers
 - Passenger generation, jeep movement, and tandem simulation tools
 """
 
 from .travel_graph import (
     TravelGraphManager,
     JeepneyRoute,
+    JeepneySystem,
+    JeepneyRouteScrubber,
+    TravelGraphVisualizer,
+    visualize_travel_graph,
     # Helper functions for graph construction
     make_coord_key,
     resolve_study_area_boundary,
@@ -45,6 +50,10 @@ __all__ = [
     # Main classes
     "TravelGraphManager",
     "JeepneyRoute",
+    "JeepneySystem",
+    "JeepneyRouteScrubber",
+    "TravelGraphVisualizer",
+    "visualize_travel_graph",
     # Graph construction helpers
     "make_coord_key",
     "resolve_study_area_boundary",

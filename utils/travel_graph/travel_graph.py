@@ -612,6 +612,7 @@ class TravelGraphManager:
             row.edge_id: row
             for row in self._active_edges.itertuples(index=False)
         }
+        self._route_edge_ids = self._build_route_edge_index()
         self._accessible  = self._build_accessible_index()
         self._node_coords = self._build_node_coords()
 
@@ -730,6 +731,22 @@ class TravelGraphManager:
             for row in self._active_edges.itertuples(index=False)
         }
 
+    def _build_route_edge_index(self) -> dict:
+        """Build edge_id -> [route_id, ...] for active ride edges."""
+        if not self._routes:
+            return {}
+        index: dict[str, list[str]] = {}
+        for route in self._routes:
+            for u_node, v_node in route.edge_pairs:
+                matches = self._active_edges[
+                    (self._active_edges["u"] == u_node)
+                    & (self._active_edges["v"] == v_node)
+                    & (self._active_edges["edge_type"] == _RIDE_TYPE)
+                ]["edge_id"]
+                for edge_id in matches:
+                    index.setdefault(edge_id, []).append(route.route_id)
+        return index
+
     def _build_node_coords(self) -> dict:
         """Build node_id → (lat, lon) from the nodes DataFrame (if loaded)."""
         if self._nodes_df is None:
@@ -809,6 +826,10 @@ class TravelGraphManager:
         (route-filtered) graph — O(1) lookup.
         """
         return list(self._accessible.get(edge_id, []))
+
+    def get_route_ids_for_edge(self, edge_id: str) -> list[str]:
+        """Return the route IDs that contain an active ride edge."""
+        return list(self._route_edge_ids.get(edge_id, []))
 
     # ── Method 1: generate_random_ride_loop ─────────────────────────────────
 

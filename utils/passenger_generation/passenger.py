@@ -102,6 +102,9 @@ class Passenger:
         self.shortest_path_edges = []  # List of edge IDs from start to end
         self.shortest_path_nodes = []  # List of node IDs from start to end
         self.current_path_index = 0  # Current position in shortest path
+        self.current_edge_progress_m = 0.0
+        self.boarded_jeep_id = None
+        self.boarded_route_id = None
         
     def get_start_lat_lon(self):
         """Get starting latitude and longitude."""
@@ -223,6 +226,14 @@ class Passenger:
     def reset_path_index(self) -> None:
         """Reset path traversal index (e.g., for restart)."""
         self.current_path_index = 0
+        self.current_edge_progress_m = 0.0
+        self.boarded_jeep_id = None
+        self.boarded_route_id = None
+
+    def current_path_edge_id(self):
+        if 0 <= self.current_path_index < len(self.shortest_path_edges):
+            return self.shortest_path_edges[self.current_path_index]
+        return None
     
     def __repr__(self) -> str:
         return (

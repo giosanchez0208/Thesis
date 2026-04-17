@@ -1,6 +1,7 @@
 """Travel graph construction and management module."""
 
 from .travel_graph_visualizer import TravelGraphVisualizer, visualize_travel_graph
+from .jeepney_system import JeepneySystem, JeepneyRouteScrubber
 
 from .travel_graph import (
     TravelGraphManager,
@@ -30,6 +31,8 @@ __all__ = [
     # Main classes
     "TravelGraphManager",
     "JeepneyRoute",
+    "JeepneySystem",
+    "JeepneyRouteScrubber",
     # Graph construction helpers
     "make_coord_key",
     "resolve_study_area_boundary",

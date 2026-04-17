@@ -72,6 +72,7 @@ simulation:
   # Default fleet assumptions when a route-specific size is not supplied
   default_num_jeeps: 3
   headway_s: 60.0
+  max_timesteps: 10000
 
 # ============================
 # Passenger Generation
