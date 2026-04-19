@@ -63,6 +63,15 @@ class BaselineRoute:
             return list(self.path_latlon)
         return self.path_latlon + [self.path_latlon[0]]
 
+    @property
+    def nodes(self) -> list[int]:
+        """Route node sequence compatible with the shared jeepney visualizer."""
+        if not self.path_node_ids:
+            return []
+        if len(self.path_node_ids) > 1 and self.path_node_ids[0] == self.path_node_ids[-1]:
+            return list(self.path_node_ids[:-1])
+        return list(self.path_node_ids)
+
 
 class BaselineRouteGenerator:
     """
