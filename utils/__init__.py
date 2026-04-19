@@ -6,8 +6,10 @@ Provides:
 - JeepneyRoute for defining jeepney services
 - Travel graph HTML visualization helpers
 - Passenger generation, jeep movement, and tandem simulation tools
+- Traffic-biased baseline route generation on the physical street network
 """
 
+from .baseline_route_generator import BaselineRouteGenerator, BaselineRoute
 from .travel_graph import (
     TravelGraphManager,
     JeepneyRoute,
@@ -54,6 +56,8 @@ __all__ = [
     "JeepneyRouteScrubber",
     "TravelGraphVisualizer",
     "visualize_travel_graph",
+    "BaselineRouteGenerator",
+    "BaselineRoute",
     # Graph construction helpers
     "make_coord_key",
     "resolve_study_area_boundary",

@@ -30,6 +30,8 @@ Re-exports the main travel graph and passenger utilities. It exposes:
 - `visualize_travel_graph`
 - passenger map, passenger, jeep, and tandem simulation classes
 - travel graph construction helpers
+- `BaselineRouteGenerator`
+- `BaselineRoute`
 
 ### `utils/travel_graph/__init__.py`
 
@@ -178,6 +180,32 @@ What it does:
 - samples nodes probabilistically with `generate_nodes`
 
 This class does not depend on the travel graph. It only supplies plausible passenger origin and destination points.
+`generate_nodes()` also accepts an optional `random_state` for reproducible traffic-biased sampling.
+
+## `utils/baseline_route_generator.py`
+
+This module creates the new geometric baseline routes on the physical drivable street network only.
+
+### `BaselineRouteGenerator`
+
+What it does:
+
+- loads the drive-only street graph with the existing graph-loading helpers
+- samples exactly four traffic-biased anchors using `PassengerMap`
+- rejects anchor sets whose projected quadrilateral area is below the configured minimum
+- stitches shortest paths between the four anchors to form a closed loop
+- exports either a combined multi-route explorer or per-route HTML maps for inspection
+
+### `BaselineRoute`
+
+A compact route record containing:
+
+- the selected anchor nodes
+- ordered anchor geometry
+- the full physical path node sequence
+- projected area and route length
+
+This module is the baseline route-generation entry point for B4 and later RL work.
 
 ## `utils/passenger_generation/passenger.py`
 

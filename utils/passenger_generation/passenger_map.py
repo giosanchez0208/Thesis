@@ -44,12 +44,16 @@ class PassengerMap:
         # Return exponentiated result to get actual volume 
         return np.exp(ln_v_ped)
 
-    def generate_nodes(self, n_points=10000):
+    def generate_nodes(self, n_points=10000, random_state=None):
  
         # Normalize V_ped values to create a spatial probability distribution 
         weights = self.df['v_ped'] / self.df['v_ped'].sum()
-        
-        # Sample origins based on the distribution 
-        sampled_indices = np.random.choice(self.df.index, size=n_points, p=weights)
+
+        # Sample origins based on the distribution
+        if random_state is None:
+            sampled_indices = np.random.choice(self.df.index, size=n_points, p=weights)
+        else:
+            rng = np.random.default_rng(random_state)
+            sampled_indices = rng.choice(self.df.index.to_numpy(), size=n_points, p=weights)
         
         return self.df.loc[sampled_indices].copy()
