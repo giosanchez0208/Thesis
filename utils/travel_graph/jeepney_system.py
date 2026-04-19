@@ -165,7 +165,7 @@ class JeepneySystem:
         manager,
         *,
         title: str = "Jeepney Route Explorer",
-        route_notes: dict[str, str] | list[str] | tuple[str, ...] | None = None,
+        route_notes: dict[str, dict[str, str] | str] | None = None,
     ) -> str:
         """Build inline HTML with one-route-at-a-time navigation and display-all mode."""
         coords = getattr(manager, "_node_coords", None) or {}
@@ -211,23 +211,40 @@ class JeepneySystem:
                 f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" class="road-line" />'
             )
 
+        def _route_note_text(route_id: str, display_index: int) -> tuple[str, str, str]:
+            default_encoding = f"route_id: {route_id}\nroute_index: {display_index}"
+            default_interpretation = f"Now displaying route: {display_index}"
+
+            payload = None if route_notes is None else route_notes.get(route_id)
+            if isinstance(payload, dict):
+                encoding = str(payload.get("encoding", default_encoding)).strip()
+                interpretation = str(payload.get("interpretation", default_interpretation)).strip()
+            elif payload is None:
+                encoding = default_encoding
+                interpretation = default_interpretation
+            else:
+                encoding = str(payload).strip()
+                interpretation = ""
+
+            if interpretation:
+                note = f"Encoding\n{encoding}\n\nInterpretation\n{interpretation}"
+            else:
+                note = f"Encoding\n{encoding}"
+            return encoding, interpretation, note
+
         route_data = []
         for index, route in enumerate(self.routes, start=1):
             points = route_points[route.route_id]
             if len(points) < 2:
                 continue
-            default_note = f"Now displaying route: {index}"
-            if route_notes is None:
-                note = default_note
-            elif isinstance(route_notes, dict):
-                note = str(route_notes.get(route.route_id, default_note))
-            else:
-                note = str(route_notes[index - 1]) if index - 1 < len(route_notes) else default_note
+            encoding, interpretation, note = _route_note_text(route.route_id, index)
             closed = points + [points[0]]
             route_data.append(
                 {
                     "id": route.route_id,
                     "display_index": index,
+                    "encoding": encoding,
+                    "interpretation": interpretation,
                     "note": note,
                     "points": [list(project(p)) for p in points],
                     "closed": [list(project(p)) for p in closed],
@@ -436,6 +453,24 @@ class JeepneySystem:
       }}
     }}
 
+    function formatRouteNote(route) {{
+      if (!route) return "";
+      const lines = [];
+      if (route.encoding) {{
+        lines.push("Encoding");
+        lines.push(route.encoding);
+      }}
+      if (route.interpretation) {{
+        if (lines.length) lines.push("");
+        lines.push("Interpretation");
+        lines.push(route.interpretation);
+      }}
+      if (!lines.length && route.note) {{
+        lines.push(route.note);
+      }}
+      return lines.join("\\n");
+    }}
+
     function renderSingleRoute() {{
       clearRouteGroup();
       const route = routes[currentIndex];
@@ -462,7 +497,7 @@ class JeepneySystem:
       }}));
       g.lastChild.textContent = route.id;
       routeGroup.appendChild(g);
-      setRouteNote(route.note || `Now displaying route: ${{route.display_index ?? currentIndex + 1}}`);
+      setRouteNote(formatRouteNote(route) || `Now displaying route: ${{route.display_index ?? currentIndex + 1}}`);
       startAnimation(route);
       updateButtons();
     }}
@@ -487,7 +522,7 @@ class JeepneySystem:
         routeGroup.appendChild(g);
       }});
       stopAnimation();
-      setRouteNote("Now displaying route: all routes");
+      setRouteNote("Encoding\\nall routes\\n\\nInterpretation\\nNow displaying route: all routes");
       updateButtons();
     }}
 
@@ -570,7 +605,7 @@ class JeepneySystem:
         output_html,
         *,
         title: str = "Jeepney Route Explorer",
-        route_notes: dict[str, str] | list[str] | tuple[str, ...] | None = None,
+        route_notes: dict[str, dict[str, str] | str] | None = None,
     ) -> Path:
         """Write the route explorer HTML to disk and return the output path."""
         out = Path(output_html).resolve()

@@ -7,14 +7,16 @@ final route under generalized travel cost.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from math import atan2, cos, hypot, pi, sin
 from typing import Any
 
 import networkx as nx
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPoint, Polygon
 
+from .passenger_generation import PassengerMap
 from .travel_graph import load_graphs_for_study_area, node_table_from_graph
 
 try:  # pragma: no cover - optional dependency
@@ -80,6 +82,7 @@ class JeepneyRouteEnv(gym.Env):
         drive_graph_raw: nx.MultiDiGraph | None = None,
         drive_graph_proj: nx.MultiDiGraph | None = None,
         *,
+        passenger_map: PassengerMap | None = None,
         place_queries: list[str] | None = None,
         point_query: str | None = None,
         point_dist: float = 30_000.0,
@@ -119,8 +122,10 @@ class JeepneyRouteEnv(gym.Env):
             self.drive_graph_raw = drive_graph_raw
             self.drive_graph_proj = drive_graph_proj
 
+        self.passenger_map = passenger_map or PassengerMap()
         self.node_table = node_table_from_graph(self.drive_graph_raw, self.drive_graph_proj)
         self.node_table["base_node_id"] = self.node_table["base_node_id"].astype(int)
+        self.node_table["node_key"] = self.node_table["base_node_id"].astype(int)
         self._x_by_node = {
             int(row.base_node_id): float(row.x) for row in self.node_table.itertuples(index=False)
         }
@@ -134,6 +139,15 @@ class JeepneyRouteEnv(gym.Env):
             int(row.base_node_id): float(row.lon) for row in self.node_table.itertuples(index=False)
         }
         self._node_ids = np.array(self.node_table["base_node_id"].to_list(), dtype=int)
+        self._out_degree_by_node = {int(node): int(self.drive_graph_raw.out_degree(node)) for node in self._node_ids}
+        self._in_degree_by_node = {int(node): int(self.drive_graph_raw.in_degree(node)) for node in self._node_ids}
+        self._max_out_degree = max(self._out_degree_by_node.values(), default=1)
+        self._max_in_degree = max(self._in_degree_by_node.values(), default=1)
+
+        demand_series = self.passenger_map.df.groupby("base_osmid")["v_ped"].mean()
+        self._demand_by_node = {int(node_id): float(value) for node_id, value in demand_series.items()}
+        self._demand_values = np.array(list(self._demand_by_node.values()), dtype=np.float64)
+        self._demand_scale = max(float(np.percentile(self._demand_values, 95)) if self._demand_values.size else 1.0, 1.0)
 
         self._successors = self._build_successor_cache()
         self._start_nodes = [node for node, succ in self._successors.items() if len(succ) > 0]
@@ -155,6 +169,7 @@ class JeepneyRouteEnv(gym.Env):
         self.closure_bonus = float(closure_bonus)
         self.termination_penalty = float(termination_penalty)
         self.u_turn_threshold = 0.85 * pi
+        self.sharp_turn_threshold = pi / 3
 
         self.max_candidates = int(max_candidates or max((len(v) for v in self._successors.values()), default=1))
         self.max_candidates = max(self.max_candidates, 1)
@@ -162,14 +177,19 @@ class JeepneyRouteEnv(gym.Env):
         self._x_span = float(self.node_table["x"].max() - self.node_table["x"].min()) if not self.node_table.empty else 1.0
         self._y_span = float(self.node_table["y"].max() - self.node_table["y"].min()) if not self.node_table.empty else 1.0
         self._distance_scale = max(hypot(self._x_span, self._y_span), 1.0)
+        self._area_scale = max(self._distance_scale**2, 1.0)
         self._edge_scale = max(self._max_edge_length(), 1.0)
 
         self.action_space = spaces.Discrete(self.max_candidates + 1)
         self.observation_space = spaces.Dict(
             {
-                "global": spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32),
+                "shape": spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype=np.float32),
+                "history": spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32),
+                "topology": spaces.Box(low=-1.0, high=1.0, shape=(5,), dtype=np.float32),
+                "demand": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+                "global": spaces.Box(low=-1.0, high=1.0, shape=(24,), dtype=np.float32),
                 "candidates": spaces.Box(
-                    low=-1.0, high=1.0, shape=(self.max_candidates, 6), dtype=np.float32
+                    low=-1.0, high=1.0, shape=(self.max_candidates, 10), dtype=np.float32
                 ),
                 "action_mask": spaces.Box(
                     low=0.0, high=1.0, shape=(self.max_candidates + 1,), dtype=np.float32
@@ -189,6 +209,10 @@ class JeepneyRouteEnv(gym.Env):
         self.steps_taken = 0
         self._last_turn_angle = 0.0
         self._current_reference_vector: tuple[float, float] = (1.0, 0.0)
+        self._turn_history = deque(maxlen=6)
+        self._recent_step_lengths = deque(maxlen=6)
+        self._sharp_turns_since_reset = 0
+        self._steps_since_sharp_turn = 0
 
     def _build_successor_cache(self) -> dict[int, list[_CandidateEdge]]:
         cache: dict[int, list[_CandidateEdge]] = {}
@@ -218,6 +242,113 @@ class JeepneyRouteEnv(gym.Env):
         for _, _, data in self.drive_graph_raw.edges(data=True):
             max_length = max(max_length, float(data.get("length", 0.0)))
         return max_length
+
+    def _current_points_xy(self) -> list[tuple[float, float]]:
+        return [(self._x_by_node[node_id], self._y_by_node[node_id]) for node_id in self.path_node_ids]
+
+    def _current_bbox_diagonal_m(self) -> float:
+        points = self._current_points_xy()
+        if not points:
+            return 0.0
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return float(hypot(max(xs) - min(xs), max(ys) - min(ys)))
+
+    def _current_hull_area_m2(self) -> float:
+        points = self._current_points_xy()
+        if len(points) < 2:
+            return 0.0
+        return float(MultiPoint(points).convex_hull.area)
+
+    def _node_demand(self, node_id: int) -> float:
+        return float(self._demand_by_node.get(int(node_id), 0.0))
+
+    def _normalized_demand(self, node_id: int) -> float:
+        return float(np.clip(self._node_demand(node_id) / self._demand_scale, 0.0, 1.0))
+
+    def _candidate_demand_values(self) -> list[float]:
+        return [self._node_demand(cand.next_node_id) for cand in self.current_candidates]
+
+    def _shape_features(self) -> np.ndarray:
+        distance, bearing = self._distance_and_bearing_to_origin()
+        path_length = float(self.cumulative_length_m)
+        bbox_diag = self._current_bbox_diagonal_m()
+        hull_area = self._current_hull_area_m2()
+        compactness = hull_area / max(hull_area + path_length**2, 1.0)
+        return np.asarray(
+            [
+                float(np.clip(distance / self._distance_scale, 0.0, 1.0)),
+                float(sin(bearing)),
+                float(cos(bearing)),
+                float(np.clip(path_length / self._distance_scale, 0.0, 1.0)),
+                float(np.clip(bbox_diag / self._distance_scale, 0.0, 1.0)),
+                float(np.clip(hull_area / self._area_scale, 0.0, 1.0)),
+                float(np.clip(compactness, 0.0, 1.0)),
+            ],
+            dtype=np.float32,
+        )
+
+    def _history_features(self) -> np.ndarray:
+        turns = list(self._turn_history)
+        recent_lengths = list(self._recent_step_lengths)
+        if not turns and not recent_lengths:
+            return np.zeros((8,), dtype=np.float32)
+        abs_turns = np.abs(np.asarray(turns, dtype=np.float64)) if turns else np.asarray([], dtype=np.float64)
+        last_turn = float(turns[-1]) if turns else 0.0
+        recent_length_mean = float(np.mean(recent_lengths)) if recent_lengths else 0.0
+        recent_length_std = float(np.std(recent_lengths, ddof=0)) if len(recent_lengths) > 1 else 0.0
+        mean_abs_turn = float(np.mean(abs_turns) / pi) if abs_turns.size else 0.0
+        max_abs_turn = float(np.max(abs_turns) / pi) if abs_turns.size else 0.0
+        mean_signed_turn = float(np.mean(turns) / pi) if turns else 0.0
+        return np.asarray(
+            [
+                float(np.clip(mean_abs_turn, 0.0, 1.0)),
+                float(np.clip(max_abs_turn, 0.0, 1.0)),
+                float(np.clip(mean_signed_turn, -1.0, 1.0)),
+                float(sin(last_turn)),
+                float(cos(last_turn)),
+                float(np.clip(recent_length_mean / self._edge_scale, 0.0, 1.0)),
+                float(np.clip(recent_length_std / self._edge_scale, 0.0, 1.0)),
+                float(np.clip(self._steps_since_sharp_turn / max(self.max_steps, 1), 0.0, 1.0)),
+            ],
+            dtype=np.float32,
+        )
+
+    def _topology_features(self) -> np.ndarray:
+        if self.current_node_id is None:
+            return np.zeros((5,), dtype=np.float32)
+        current = int(self.current_node_id)
+        current_out = self._out_degree_by_node.get(current, 0)
+        current_in = self._in_degree_by_node.get(current, 0)
+        candidate_count = len(self.current_candidates)
+        next_outs = [self._out_degree_by_node.get(cand.next_node_id, 0) for cand in self.current_candidates]
+        mean_candidate_out = float(np.mean(next_outs)) if next_outs else 0.0
+        dead_end_flag = 1.0 if current_out <= 1 else 0.0
+        return np.asarray(
+            [
+                float(np.clip(current_out / max(self._max_out_degree, 1), 0.0, 1.0)),
+                float(np.clip(current_in / max(self._max_in_degree, 1), 0.0, 1.0)),
+                float(dead_end_flag),
+                float(np.clip(candidate_count / max(self.max_candidates, 1), 0.0, 1.0)),
+                float(np.clip(mean_candidate_out / max(self._max_out_degree, 1), 0.0, 1.0)),
+            ],
+            dtype=np.float32,
+        )
+
+    def _demand_features(self) -> np.ndarray:
+        if self.current_node_id is None:
+            return np.zeros((4,), dtype=np.float32)
+        current_demand = self._normalized_demand(self.current_node_id)
+        candidate_demands = np.asarray(self._candidate_demand_values(), dtype=np.float64)
+        if candidate_demands.size:
+            candidate_mean = float(np.clip(candidate_demands.mean() / self._demand_scale, 0.0, 1.0))
+            candidate_max = float(np.clip(candidate_demands.max() / self._demand_scale, 0.0, 1.0))
+            demand_gap = float(np.clip((candidate_demands.max() - self._node_demand(self.current_node_id)) / self._demand_scale, -1.0, 1.0))
+        else:
+            candidate_mean = 0.0
+            candidate_max = 0.0
+            demand_gap = 0.0
+        return np.asarray([current_demand, candidate_mean, candidate_max, demand_gap], dtype=np.float32)
 
     @staticmethod
     def _normalize_vector(vector_xy: tuple[float, float]) -> np.ndarray:
@@ -302,11 +433,12 @@ class JeepneyRouteEnv(gym.Env):
         origin = self.origin_node_id
         current = self.current_node_id
         if current is None:
-            return np.zeros((self.max_candidates, 6), dtype=np.float32), np.zeros(
+            return np.zeros((self.max_candidates, 10), dtype=np.float32), np.zeros(
                 (self.max_candidates + 1,), dtype=np.float32
             )
 
         rows: list[list[float]] = []
+        current_demand = self._node_demand(current)
         for cand in self.current_candidates[: self.max_candidates]:
             angle = self._signed_angle(ref, cand.vector_xy)
             cand_dir = self._normalize_vector(cand.vector_xy)
@@ -321,20 +453,26 @@ class JeepneyRouteEnv(gym.Env):
                 alignment = 0.0
             backtrack = 1.0 if cand.next_node_id == self.previous_node_id else 0.0
             uturn = 1.0 if abs(angle) >= self.u_turn_threshold else 0.0
+            next_demand = self._node_demand(cand.next_node_id)
+            demand_delta = float(np.clip((next_demand - current_demand) / self._demand_scale, -1.0, 1.0))
             rows.append(
                 [
                     float(sin(angle)),
                     float(cos(angle)),
                     float(np.clip(cand.length_m / self._edge_scale, 0.0, 1.0)),
-                    alignment,
+                    float(np.clip(self._out_degree_by_node.get(cand.next_node_id, 0) / max(self._max_out_degree, 1), 0.0, 1.0)),
+                    float(1.0 if self._out_degree_by_node.get(cand.next_node_id, 0) <= 1 else 0.0),
+                    float(np.clip(next_demand / self._demand_scale, 0.0, 1.0)),
+                    demand_delta,
                     backtrack,
                     uturn,
+                    alignment,
                 ]
             )
 
         pad_rows = self.max_candidates - len(rows)
         if pad_rows > 0:
-            rows.extend([[0.0] * 6 for _ in range(pad_rows)])
+            rows.extend([[0.0] * 10 for _ in range(pad_rows)])
 
         mask = np.zeros((self.max_candidates + 1,), dtype=np.float32)
         mask[: len(self.current_candidates[: self.max_candidates])] = 1.0
@@ -342,27 +480,27 @@ class JeepneyRouteEnv(gym.Env):
         return np.asarray(rows, dtype=np.float32), mask
 
     def _global_features(self) -> np.ndarray:
-        if self.current_node_id is None:
-            return np.zeros((7,), dtype=np.float32)
-        distance, bearing = self._distance_and_bearing_to_origin()
-        sinuosity = self._route_sinuosity()
-        return np.asarray(
+        return np.concatenate(
             [
-                float(np.clip(distance / self._distance_scale, 0.0, 1.0)),
-                float(sin(bearing)),
-                float(cos(bearing)),
-                float(np.clip(sinuosity / 10.0, 0.0, 1.0)),
-                float(np.clip(self.cumulative_length_m / self._distance_scale, 0.0, 1.0)),
-                float(np.clip(self.cumulative_turn_penalty / 10.0, 0.0, 1.0)),
-                float(np.clip(self.consecutive_uturns / 5.0, 0.0, 1.0)),
-            ],
-            dtype=np.float32,
-        )
+                self._shape_features(),
+                self._history_features(),
+                self._topology_features(),
+                self._demand_features(),
+            ]
+        ).astype(np.float32, copy=False)
 
     def _observation(self) -> dict[str, np.ndarray]:
         candidates, mask = self._candidate_features()
+        shape = self._shape_features()
+        history = self._history_features()
+        topology = self._topology_features()
+        demand = self._demand_features()
         return {
-            "global": self._global_features(),
+            "shape": shape,
+            "history": history,
+            "topology": topology,
+            "demand": demand,
+            "global": np.concatenate([shape, history, topology, demand]).astype(np.float32, copy=False),
             "candidates": candidates,
             "action_mask": mask,
         }
@@ -370,23 +508,23 @@ class JeepneyRouteEnv(gym.Env):
     def _flat_state(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         return np.concatenate(
             [
-                observation["global"].ravel(),
+                observation["shape"].ravel(),
+                observation["history"].ravel(),
+                observation["topology"].ravel(),
+                observation["demand"].ravel(),
                 observation["candidates"].ravel(),
                 observation["action_mask"].ravel(),
             ]
         ).astype(np.float32, copy=False)
 
     def _current_polygon_area_m2(self) -> float:
-        if len(self.path_node_ids) < 4:
+        if len(self.path_node_ids) < 3:
             return 0.0
-        points = [
-            (self._x_by_node[node_id], self._y_by_node[node_id])
-            for node_id in self.path_node_ids
-        ]
+        points = self._current_points_xy()
         polygon = Polygon(points)
-        if polygon.is_empty:
-            return 0.0
-        return float(polygon.area)
+        if polygon.is_valid and not polygon.is_empty:
+            return float(polygon.area)
+        return self._current_hull_area_m2()
 
     def _set_candidates(self, node_id: int) -> None:
         candidates = list(self._successors.get(int(node_id), []))
@@ -424,6 +562,10 @@ class JeepneyRouteEnv(gym.Env):
         self.consecutive_uturns = 0
         self.steps_taken = 0
         self._last_turn_angle = 0.0
+        self._turn_history.clear()
+        self._recent_step_lengths.clear()
+        self._sharp_turns_since_reset = 0
+        self._steps_since_sharp_turn = 0
         self._set_candidates(origin_node_id)
         observation = self._observation()
         info = {
@@ -447,15 +589,23 @@ class JeepneyRouteEnv(gym.Env):
                 current_xy[0] - self._x_by_node[self.previous_node_id],
                 current_xy[1] - self._y_by_node[self.previous_node_id],
             )
-            turn_angle = abs(self._signed_angle(incoming, vector_xy))
-            turn_penalty = self._continuous_turn_penalty(turn_angle) * self.turn_penalty_weight
-            if turn_angle >= self.u_turn_threshold:
+            signed_turn = self._signed_angle(incoming, vector_xy)
+            turn_angle = float(signed_turn)
+            abs_turn = abs(signed_turn)
+            turn_penalty = self._continuous_turn_penalty(abs_turn) * self.turn_penalty_weight
+            self._turn_history.append(turn_angle)
+            if abs_turn >= self.sharp_turn_threshold:
+                self._steps_since_sharp_turn = 0
+            else:
+                self._steps_since_sharp_turn += 1
+            if abs_turn >= self.u_turn_threshold:
                 self.consecutive_uturns += 1
                 turn_penalty += self.repeat_uturn_penalty * max(self.consecutive_uturns - 1, 0)
             else:
                 self.consecutive_uturns = 0
         else:
             self.consecutive_uturns = 0
+            self._steps_since_sharp_turn = 0
 
         revisit_penalty = self.revisit_penalty_weight if next_node_id in self.visited_node_ids else 0.0
         length_penalty = self.length_penalty_weight * (length_m / self._distance_scale)
@@ -469,6 +619,7 @@ class JeepneyRouteEnv(gym.Env):
         self.cumulative_turn_penalty += turn_penalty
         self._last_turn_angle = turn_angle
         self._current_reference_vector = vector_xy
+        self._recent_step_lengths.append(length_m)
         self.steps_taken += 1
         self._set_candidates(next_node_id)
 
