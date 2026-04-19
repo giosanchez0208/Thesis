@@ -160,7 +160,13 @@ class JeepneySystem:
             )
         return rows
 
-    def build_route_toggle_html(self, manager, *, title: str = "Jeepney Route Explorer") -> str:
+    def build_route_toggle_html(
+        self,
+        manager,
+        *,
+        title: str = "Jeepney Route Explorer",
+        route_notes: dict[str, str] | list[str] | tuple[str, ...] | None = None,
+    ) -> str:
         """Build inline HTML with one-route-at-a-time navigation and display-all mode."""
         coords = getattr(manager, "_node_coords", None) or {}
         if not coords:
@@ -206,14 +212,23 @@ class JeepneySystem:
             )
 
         route_data = []
-        for route in self.routes:
+        for index, route in enumerate(self.routes, start=1):
             points = route_points[route.route_id]
             if len(points) < 2:
                 continue
+            default_note = f"Now displaying route: {index}"
+            if route_notes is None:
+                note = default_note
+            elif isinstance(route_notes, dict):
+                note = str(route_notes.get(route.route_id, default_note))
+            else:
+                note = str(route_notes[index - 1]) if index - 1 < len(route_notes) else default_note
             closed = points + [points[0]]
             route_data.append(
                 {
                     "id": route.route_id,
+                    "display_index": index,
+                    "note": note,
                     "points": [list(project(p)) for p in points],
                     "closed": [list(project(p)) for p in closed],
                     "first": list(project(points[0])),
@@ -287,6 +302,27 @@ class JeepneySystem:
     font-size: 13px;
     color: #334155;
   }}
+  #summaryLayout {{
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }}
+  #summaryText {{
+    margin-bottom: 8px;
+  }}
+  #routeNote {{
+    width: 320px;
+    min-height: 108px;
+    resize: none;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #0f172a;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.4;
+  }}
   #mapwrap {{
     padding: 12px;
   }}
@@ -358,11 +394,14 @@ class JeepneySystem:
     </div>
   </div>
   <div id="summary">
-    One route is shown by default. Use Previous/Next or enter a route ID (e.g. R01) or number.
-    <table>
-      <thead><tr><th>Route</th><th>Nodes</th><th>Self-intersections</th><th>Turning count</th></tr></thead>
-      <tbody>{analysis_rows}</tbody>
-    </table>
+    <div id="summaryText">One route is shown by default. Use Previous/Next or enter a route ID (e.g. R01) or number.</div>
+    <div id="summaryLayout">
+      <table>
+        <thead><tr><th>Route</th><th>Nodes</th><th>Self-intersections</th><th>Turning count</th></tr></thead>
+        <tbody>{analysis_rows}</tbody>
+      </table>
+      <textarea id="routeNote" readonly spellcheck="false"></textarea>
+    </div>
   </div>
   <div id="mapwrap">
     <svg id="routeSvg" viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet">
@@ -376,6 +415,7 @@ class JeepneySystem:
     const routes = {route_json};
     const routeGroup = document.getElementById("routes");
     const svg = document.getElementById("routeSvg");
+    const routeNoteBox = document.getElementById("routeNote");
     let currentIndex = 0;
     let displayAll = false;
     let timer = null;
@@ -388,6 +428,12 @@ class JeepneySystem:
       const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
       Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
       return el;
+    }}
+
+    function setRouteNote(text) {{
+      if (routeNoteBox) {{
+        routeNoteBox.value = text;
+      }}
     }}
 
     function renderSingleRoute() {{
@@ -416,6 +462,7 @@ class JeepneySystem:
       }}));
       g.lastChild.textContent = route.id;
       routeGroup.appendChild(g);
+      setRouteNote(route.note || `Now displaying route: ${{route.display_index ?? currentIndex + 1}}`);
       startAnimation(route);
       updateButtons();
     }}
@@ -440,6 +487,7 @@ class JeepneySystem:
         routeGroup.appendChild(g);
       }});
       stopAnimation();
+      setRouteNote("Now displaying route: all routes");
       updateButtons();
     }}
 
@@ -516,11 +564,18 @@ class JeepneySystem:
 </body>
 </html>"""
 
-    def export_route_toggle_html(self, manager, output_html, *, title: str = "Jeepney Route Explorer") -> Path:
+    def export_route_toggle_html(
+        self,
+        manager,
+        output_html,
+        *,
+        title: str = "Jeepney Route Explorer",
+        route_notes: dict[str, str] | list[str] | tuple[str, ...] | None = None,
+    ) -> Path:
         """Write the route explorer HTML to disk and return the output path."""
         out = Path(output_html).resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        html = self.build_route_toggle_html(manager, title=title)
+        html = self.build_route_toggle_html(manager, title=title, route_notes=route_notes)
         out.write_text(html, encoding="utf-8")
         return out
 

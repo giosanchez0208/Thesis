@@ -10,6 +10,7 @@ Provides:
 """
 
 from .baseline_route_generator import BaselineRouteGenerator, BaselineRoute
+from .jeepney_route_env import JeepneyRouteEnv
 from .travel_graph import (
     TravelGraphManager,
     JeepneyRoute,
@@ -58,6 +59,7 @@ __all__ = [
     "visualize_travel_graph",
     "BaselineRouteGenerator",
     "BaselineRoute",
+    "JeepneyRouteEnv",
     # Graph construction helpers
     "make_coord_key",
     "resolve_study_area_boundary",

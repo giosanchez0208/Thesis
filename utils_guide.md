@@ -207,6 +207,28 @@ A compact route record containing:
 
 This module is the baseline route-generation entry point for B4 and later RL work.
 
+## `utils/jeepney_route_env.py`
+
+This module provides the Gymnasium-style RL environment for geometric route construction.
+
+### `JeepneyRouteEnv`
+
+What it does:
+
+- navigates the primal physical street network step by step
+- exposes coordinate-invariant geometric observations
+- applies a continuous turn penalty during route construction
+- supports route closure as an episode-ending event
+
+State design:
+
+- relative turning angles for available next edges
+- sinuosity index for zig-zag detection
+- Euclidean distance and relative bearing back to the origin node
+- no absolute node IDs in the observation
+
+The 3-layer travel graph remains evaluation-only for generalized travel cost scoring.
+
 ## `utils/passenger_generation/passenger.py`
 
 This module models one passenger journey.
