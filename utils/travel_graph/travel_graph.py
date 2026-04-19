@@ -9,6 +9,8 @@ This module provides:
 
 from __future__ import annotations
 
+from functools import lru_cache
+import re
 from pathlib import Path as _Path
 import json as _json
 import random
@@ -40,6 +42,115 @@ except ImportError:
 def make_coord_key(df: pd.DataFrame, lon_col: str = "lon", lat_col: str = "lat", decimals: int = 7) -> pd.Series:
     """Create a coordinate key by rounding lon/lat and combining them."""
     return df[lon_col].round(decimals).astype(str) + "|" + df[lat_col].round(decimals).astype(str)
+
+
+def _place_query_tokens(place_queries: tuple[str, ...]) -> set[str]:
+    tokens: set[str] = set()
+    for query in place_queries:
+        for token in re.split(r"[^a-z0-9]+", query.lower()):
+            if len(token) >= 3:
+                tokens.add(token)
+    return tokens
+
+
+def _find_local_graph_cache(place_queries: tuple[str, ...]) -> tuple[_Path, _Path] | None:
+    repo_root = _Path(__file__).resolve().parents[2]
+    candidate_dirs = [
+        repo_root / "archive" / "processed" / "graphs",
+        repo_root / "data" / "processed" / "graphs",
+    ]
+    query_tokens = _place_query_tokens(place_queries)
+
+    for graph_dir in candidate_dirs:
+        if not graph_dir.exists():
+            continue
+
+        candidates: list[tuple[_Path, _Path]] = []
+        for walk_path in sorted(graph_dir.glob("*_walk.graphml")):
+            stem = walk_path.stem[:-5]
+            drive_path = graph_dir / f"{stem}_drive.graphml"
+            if drive_path.exists():
+                candidates.append((walk_path, drive_path))
+
+        if not candidates:
+            continue
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        for walk_path, drive_path in candidates:
+            stem = walk_path.stem.lower()
+            if not query_tokens or any(token in stem for token in query_tokens):
+                return walk_path, drive_path
+
+    return None
+
+
+@lru_cache(maxsize=8)
+def _load_graphs_for_study_area_cached(
+    place_queries: tuple[str, ...],
+    point_query: str | None,
+    point_dist: float,
+    simplify: bool,
+    retain_all: bool,
+):
+    local_cache = _find_local_graph_cache(place_queries)
+    if local_cache is not None:
+        walk_graphml, drive_graphml = local_cache
+        G_walk_raw = ox.load_graphml(walk_graphml)
+        G_drive_raw = ox.load_graphml(drive_graphml)
+        G_walk_proj = ox.project_graph(G_walk_raw)
+        G_drive_proj = ox.project_graph(G_drive_raw)
+        return (
+            None,
+            f"local graph cache ({walk_graphml.parent})",
+            f"load_graphml({walk_graphml.name}, {drive_graphml.name})",
+            G_walk_raw,
+            G_walk_proj,
+            G_drive_raw,
+            G_drive_proj,
+        )
+
+    study_area_gdf, boundary_source = resolve_study_area_boundary(list(place_queries))
+    polygon = study_area_gdf.geometry.union_all() if hasattr(study_area_gdf.geometry, "union_all") else study_area_gdf.unary_union
+
+    try:
+        G_walk_raw = ox.graph_from_polygon(
+            polygon,
+            network_type="walk",
+            simplify=simplify,
+            retain_all=retain_all,
+        )
+        G_drive_raw = ox.graph_from_polygon(
+            polygon,
+            network_type="drive",
+            simplify=simplify,
+            retain_all=retain_all,
+        )
+        graph_source = "graph_from_polygon(study_area_boundary)"
+    except Exception as exc:
+        if point_query is None:
+            raise
+        point = ox.geocode(point_query)
+        G_walk_raw = ox.graph_from_point(
+            point,
+            dist=point_dist,
+            network_type="walk",
+            simplify=simplify,
+            retain_all=retain_all,
+        )
+        G_drive_raw = ox.graph_from_point(
+            point,
+            dist=point_dist,
+            network_type="drive",
+            simplify=simplify,
+            retain_all=retain_all,
+        )
+        graph_source = f"graph_from_point({point_query!r}, dist={point_dist}) because polygon download failed: {type(exc).__name__}: {exc}"
+
+    G_walk_proj = ox.project_graph(G_walk_raw)
+    G_drive_proj = ox.project_graph(G_drive_raw)
+    return study_area_gdf, boundary_source, graph_source, G_walk_raw, G_walk_proj, G_drive_raw, G_drive_proj
 
 
 def resolve_study_area_boundary(place_queries: list):
@@ -107,46 +218,8 @@ def load_graphs_for_study_area(
     tuple
         (study_area_gdf, boundary_source, graph_source, G_walk_raw, G_walk_proj, G_drive_raw, G_drive_proj)
     """
-    study_area_gdf, boundary_source = resolve_study_area_boundary(place_queries)
-    polygon = study_area_gdf.geometry.union_all() if hasattr(study_area_gdf.geometry, "union_all") else study_area_gdf.unary_union
-
-    try:
-        G_walk_raw = ox.graph_from_polygon(
-            polygon,
-            network_type="walk",
-            simplify=simplify,
-            retain_all=retain_all,
-        )
-        G_drive_raw = ox.graph_from_polygon(
-            polygon,
-            network_type="drive",
-            simplify=simplify,
-            retain_all=retain_all,
-        )
-        graph_source = "graph_from_polygon(study_area_boundary)"
-    except Exception as exc:
-        if point_query is None:
-            raise
-        point = ox.geocode(point_query)
-        G_walk_raw = ox.graph_from_point(
-            point,
-            dist=point_dist,
-            network_type="walk",
-            simplify=simplify,
-            retain_all=retain_all,
-        )
-        G_drive_raw = ox.graph_from_point(
-            point,
-            dist=point_dist,
-            network_type="drive",
-            simplify=simplify,
-            retain_all=retain_all,
-        )
-        graph_source = f"graph_from_point({point_query!r}, dist={point_dist}) because polygon download failed: {type(exc).__name__}: {exc}"
-
-    G_walk_proj = ox.project_graph(G_walk_raw)
-    G_drive_proj = ox.project_graph(G_drive_raw)
-    return study_area_gdf, boundary_source, graph_source, G_walk_raw, G_walk_proj, G_drive_raw, G_drive_proj
+    place_queries_key = tuple(str(query) for query in place_queries)
+    return _load_graphs_for_study_area_cached(place_queries_key, point_query, float(point_dist), bool(simplify), bool(retain_all))
 
 
 def node_table_from_graph(G_raw: nx.MultiDiGraph, G_proj: nx.MultiDiGraph) -> pd.DataFrame:

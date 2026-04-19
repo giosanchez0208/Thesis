@@ -56,4 +56,4 @@ class PassengerMap:
             rng = np.random.default_rng(random_state)
             sampled_indices = rng.choice(self.df.index.to_numpy(), size=n_points, p=weights)
         
-        return self.df.loc[sampled_indices].copy()
+        return self.df.iloc[sampled_indices].copy()

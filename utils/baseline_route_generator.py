@@ -140,6 +140,10 @@ class BaselineRouteGenerator:
             int(row.base_node_id): (float(row.lat), float(row.lon), float(row.x), float(row.y))
             for row in self.node_table.itertuples(index=False)
         }
+        self._lat_by_node_id = {node_id: coords[0] for node_id, coords in self._coord_by_node_id.items()}
+        self._lon_by_node_id = {node_id: coords[1] for node_id, coords in self._coord_by_node_id.items()}
+        self._x_by_node_id = {node_id: coords[2] for node_id, coords in self._coord_by_node_id.items()}
+        self._y_by_node_id = {node_id: coords[3] for node_id, coords in self._coord_by_node_id.items()}
 
     def _random_state(self, rng: np.random.Generator) -> int:
         return int(rng.integers(0, np.iinfo(np.int32).max))
@@ -157,10 +161,10 @@ class BaselineRouteGenerator:
 
         snapped = sampled.copy()
         snapped["anchor_node_id"] = self._drive_node_ids[nearest_idx]
-        snapped["anchor_lat"] = snapped["anchor_node_id"].map(self._node_table_by_base["lat"])
-        snapped["anchor_lon"] = snapped["anchor_node_id"].map(self._node_table_by_base["lon"])
-        snapped["anchor_x"] = snapped["anchor_node_id"].map(self._node_table_by_base["x"])
-        snapped["anchor_y"] = snapped["anchor_node_id"].map(self._node_table_by_base["y"])
+        snapped["anchor_lat"] = snapped["anchor_node_id"].map(self._lat_by_node_id)
+        snapped["anchor_lon"] = snapped["anchor_node_id"].map(self._lon_by_node_id)
+        snapped["anchor_x"] = snapped["anchor_node_id"].map(self._x_by_node_id)
+        snapped["anchor_y"] = snapped["anchor_node_id"].map(self._y_by_node_id)
 
         grouped = (
             snapped.groupby("anchor_node_id", as_index=False)
@@ -185,7 +189,7 @@ class BaselineRouteGenerator:
         sampled = self.passenger_map.generate_nodes(
             n_points=self.anchor_pool_size,
             random_state=self._random_state(rng),
-        ).copy()
+        )
         sampled["base_osmid"] = sampled["base_osmid"].astype(int)
         sampled["lat"] = sampled["lat"].astype(float)
         sampled["lon"] = sampled["lon"].astype(float)
@@ -215,14 +219,14 @@ class BaselineRouteGenerator:
         rows: list[dict] = []
         for row in anchors.itertuples(index=False):
             node_id = int(row.anchor_node_id)
-            node_row = self._node_table_by_base.loc[node_id]
+            lat, lon, x, y = self._coord_by_node_id[node_id]
             rows.append(
                 {
                     "node_id": node_id,
-                    "lat": float(node_row.lat),
-                    "lon": float(node_row.lon),
-                    "x": float(node_row.x),
-                    "y": float(node_row.y),
+                    "lat": lat,
+                    "lon": lon,
+                    "x": x,
+                    "y": y,
                     "coord_key": str(row.coord_key),
                     "v_ped": float(getattr(row, "v_ped", np.nan)),
                     "traffic_base_osmid": int(row.traffic_base_osmid),
@@ -244,11 +248,10 @@ class BaselineRouteGenerator:
 
         for perm in permutations(anchors):
             points_xy = [(item["x"], item["y"]) for item in perm]
-            valid, area = self._polygon_simple_and_area(points_xy)
-            if not valid:
-                continue
             polygon = Polygon(points_xy)
-            if best_polygon is None or area > best_polygon.area:
+            if not polygon.is_valid or polygon.is_empty or polygon.area <= 0.0:
+                continue
+            if best_polygon is None or polygon.area > best_polygon.area:
                 best_polygon = polygon
                 best_order = list(perm)
 
@@ -263,8 +266,7 @@ class BaselineRouteGenerator:
         for current_anchor, next_anchor in zip(ordered_anchors, ordered_anchors[1:] + ordered_anchors[:1]):
             start = int(current_anchor["node_id"])
             end = int(next_anchor["node_id"])
-            segment_nodes = nx.shortest_path(self.drive_graph_raw, start, end, weight="length")
-            segment_length = float(nx.shortest_path_length(self.drive_graph_raw, start, end, weight="length"))
+            segment_length, segment_nodes = nx.bidirectional_dijkstra(self.drive_graph_raw, start, end, weight="length")
             if path_nodes and segment_nodes and path_nodes[-1] == segment_nodes[0]:
                 segment_nodes = segment_nodes[1:]
             path_nodes.extend(int(node_id) for node_id in segment_nodes)
@@ -273,11 +275,7 @@ class BaselineRouteGenerator:
         return path_nodes, total_length
 
     def _path_latlon(self, path_nodes: Sequence[int]) -> list[tuple[float, float]]:
-        coords: list[tuple[float, float]] = []
-        for node_id in path_nodes:
-            node_row = self._node_table_by_base.loc[int(node_id)]
-            coords.append((float(node_row.lat), float(node_row.lon)))
-        return coords
+        return [(self._lat_by_node_id[int(node_id)], self._lon_by_node_id[int(node_id)]) for node_id in path_nodes]
 
     def generate_route(self, *, route_id: str = "B01", seed: int | None = None) -> BaselineRoute:
         rng = np.random.default_rng(self._seed if seed is None else seed)

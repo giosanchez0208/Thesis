@@ -297,12 +297,12 @@ class JeepneySystem:
     background: white;
   }}
   .road-line {{
-    stroke: #d1d5db;
+    stroke: #94a3b8;
     stroke-width: 1;
-    opacity: 0.18;
+    opacity: 0.28;
   }}
   .route-line {{
-    stroke: #2563eb;
+    stroke: #93c5fd;
     stroke-width: 3;
     fill: none;
   }}
@@ -323,9 +323,8 @@ class JeepneySystem:
     stroke-linejoin: round;
   }}
   .route-node {{
-    fill: #2563eb;
-    stroke: white;
-    stroke-width: 2px;
+    fill: #1e3a8a;
+    stroke: none;
   }}
   .route-dot {{
     fill: #ef4444;
@@ -402,7 +401,7 @@ class JeepneySystem:
       }}));
       route.points.forEach((p, idx) => {{
         g.appendChild(makeSvgEl("circle", {{
-          cx: p[0], cy: p[1], r: 3.5, class: "route-node"
+          cx: p[0], cy: p[1], r: 2.5, class: "route-node"
         }}));
       }});
       g.appendChild(makeSvgEl("circle", {{
@@ -431,7 +430,7 @@ class JeepneySystem:
         }}));
         route.points.forEach((p, idx) => {{
           g.appendChild(makeSvgEl("circle", {{
-            cx: p[0], cy: p[1], r: 3.5, class: "route-node"
+            cx: p[0], cy: p[1], r: 2.5, class: "route-node"
           }}));
         }});
         g.appendChild(makeSvgEl("text", {{
@@ -465,7 +464,7 @@ class JeepneySystem:
         idx = (idx + 1) % route.points.length;
       }};
       place();
-      timer = setInterval(place, 550);
+      timer = setInterval(place, 110);
     }}
 
     function updateButtons() {{
