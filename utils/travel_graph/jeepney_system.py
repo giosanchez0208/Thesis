@@ -166,6 +166,7 @@ class JeepneySystem:
         *,
         title: str = "Jeepney Route Explorer",
         route_notes: dict[str, dict[str, str] | str] | None = None,
+        overall_summary: str | None = None,
     ) -> str:
         """Build inline HTML with one-route-at-a-time navigation and display-all mode."""
         coords = getattr(manager, "_node_coords", None) or {}
@@ -231,6 +232,12 @@ class JeepneySystem:
             else:
                 note = f"Encoding\n{encoding}"
             return encoding, interpretation, note
+
+        summary_text = (
+            overall_summary.strip()
+            if isinstance(overall_summary, str) and overall_summary.strip()
+            else "One route is shown by default. Use Previous/Next or enter a route ID (e.g. R01) or number."
+        )
 
         route_data = []
         for index, route in enumerate(self.routes, start=1):
@@ -327,6 +334,7 @@ class JeepneySystem:
   }}
   #summaryText {{
     margin-bottom: 8px;
+    white-space: pre-wrap;
   }}
   #routeNote {{
     width: 320px;
@@ -410,9 +418,9 @@ class JeepneySystem:
       </div>
     </div>
   </div>
-  <div id="summary">
-    <div id="summaryText">One route is shown by default. Use Previous/Next or enter a route ID (e.g. R01) or number.</div>
-    <div id="summaryLayout">
+    <div id="summary">
+     <div id="summaryText">{escape(summary_text)}</div>
+     <div id="summaryLayout">
       <table>
         <thead><tr><th>Route</th><th>Nodes</th><th>Self-intersections</th><th>Turning count</th></tr></thead>
         <tbody>{analysis_rows}</tbody>
@@ -606,11 +614,17 @@ class JeepneySystem:
         *,
         title: str = "Jeepney Route Explorer",
         route_notes: dict[str, dict[str, str] | str] | None = None,
+        overall_summary: str | None = None,
     ) -> Path:
         """Write the route explorer HTML to disk and return the output path."""
         out = Path(output_html).resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        html = self.build_route_toggle_html(manager, title=title, route_notes=route_notes)
+        html = self.build_route_toggle_html(
+            manager,
+            title=title,
+            route_notes=route_notes,
+            overall_summary=overall_summary,
+        )
         out.write_text(html, encoding="utf-8")
         return out
 

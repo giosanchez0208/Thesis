@@ -271,6 +271,21 @@ Use this helper when you want the training trail in tabular form without rerunni
 - `training_history.csv` stores each finished episode with return, reward, GTC, and route-length fields
 - `training_snapshots.csv` stores the best and worst closed-loop routes with their saved artifact paths
 
+## `utils/route_spectrum_analysis.py`
+
+This module powers the pre/post notebook analysis for B4A and B4B.
+
+### What it does
+
+- builds a numeric feature table for each route using shape, history, topology, demand, and global metrics
+- computes Pearson and Spearman-style correlation matrices from that feature table
+- extracts the strongest feature pairs for quick inspection
+- writes correlation heatmaps and delta heatmaps to disk
+- formats short route notes plus an overall summary for the shared route explorer HTML
+- the shared route explorer can show that overall summary above the per-route note box
+
+Use this when you want route comparisons to move beyond simple averages and into relationship analysis.
+
 ## `utils/passenger_generation/passenger.py`
 
 This module models one passenger journey.
