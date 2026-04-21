@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +93,7 @@ def export_training_results_csvs(
         "episode_index",
         "episode_return",
         "terminated_reason",
+        "closure_mode",
         "closed_loop",
         "fitness_reward",
         "average_gtc",
@@ -186,20 +188,44 @@ class BestWorstRouteCallback(BaseCallback):
         *,
         drive_graph_raw,
         output_dir: str | Path,
+        heartbeat_seconds: float = 60.0,
         verbose: int = 0,
     ) -> None:
         super().__init__(verbose=verbose)
         self.drive_graph_raw = drive_graph_raw
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.heartbeat_seconds = max(float(heartbeat_seconds), 0.0)
         self.best_snapshot: RouteTrainingSnapshot | None = None
         self.worst_snapshot: RouteTrainingSnapshot | None = None
         self.history: list[dict[str, Any]] = []
         self._episode_returns: list[float] = []
         self._episode_index = 0
+        self._closed_loop_count = 0
+        self._forced_loop_count = 0
+        self._last_heartbeat = 0.0
 
     def _init_callback(self) -> None:
         self._episode_returns = [0.0 for _ in range(self.training_env.num_envs)]
+        self._closed_loop_count = 0
+        self._forced_loop_count = 0
+        self._last_heartbeat = time.monotonic()
+
+    def _emit_heartbeat(self) -> None:
+        if self.heartbeat_seconds <= 0.0:
+            return
+        now = time.monotonic()
+        if now - self._last_heartbeat < self.heartbeat_seconds:
+            return
+        self._last_heartbeat = now
+        best_return = self.best_snapshot.episode_return if self.best_snapshot is not None else float("nan")
+        print(
+            f"[training] episodes={self._episode_index} "
+            f"closed_loops={self._closed_loop_count} "
+            f"forced_loops={self._forced_loop_count} "
+            f"best_return={best_return:.3f}",
+            flush=True,
+        )
 
     def _capture_snapshot(
         self,
@@ -255,12 +281,14 @@ class BestWorstRouteCallback(BaseCallback):
             self._episode_returns[index] = 0.0
             self._episode_index += 1
             closed_loop = info.get("terminated_reason") == "closed_loop"
+            closure_mode = info.get("closure_mode")
             fitness = info.get("route_fitness")
             route_node_ids = [int(node_id) for node_id in info.get("route_path_node_ids", [])]
             history_record: dict[str, Any] = {
                 "episode_index": self._episode_index,
                 "episode_return": episode_return,
                 "terminated_reason": info.get("terminated_reason"),
+                "closure_mode": closure_mode,
                 "closed_loop": closed_loop,
                 "fitness_reward": float(getattr(fitness, "reward", info.get("fitness_reward", episode_return))),
                 "average_gtc": float(getattr(fitness, "average_gtc", info.get("fitness_average_gtc", np.nan))),
@@ -269,11 +297,14 @@ class BestWorstRouteCallback(BaseCallback):
             }
             if route_node_ids:
                 history_record["route_path_node_ids"] = route_node_ids
-            self.history.append(
-                history_record
-            )
+            self.history.append(history_record)
+            if closed_loop:
+                self._closed_loop_count += 1
+            if closure_mode == "forced":
+                self._forced_loop_count += 1
 
             if not closed_loop:
+                self._emit_heartbeat()
                 continue
 
             snapshot = self._capture_snapshot(
@@ -334,6 +365,7 @@ class BestWorstRouteCallback(BaseCallback):
                     ),
                     encoding="utf-8",
                 )
+            self._emit_heartbeat()
 
         return True
 
@@ -349,6 +381,7 @@ def build_training_env(
     background_route_std: float = 0.0,
     systemic_batch_size: int = 8,
     systemic_std_penalty_weight: float = 1.0,
+    max_workers: int | None = None,
     seed: int | None = None,
     **env_kwargs: Any,
 ) -> JeepneyRouteEnv:
@@ -362,6 +395,7 @@ def build_training_env(
         background_route_std=background_route_std,
         batch_size=systemic_batch_size,
         std_penalty_weight=systemic_std_penalty_weight,
+        max_workers=max_workers,
         seed=seed,
     )
     return JeepneyRouteEnv(
@@ -389,8 +423,10 @@ def train_route_agent(
     background_route_std: float = 0.0,
     systemic_batch_size: int = 8,
     systemic_std_penalty_weight: float = 1.0,
+    systemic_max_workers: int | None = None,
     ppo_kwargs: dict[str, Any] | None = None,
     env_kwargs: dict[str, Any] | None = None,
+    heartbeat_seconds: float = 60.0,
 ) -> RouteTrainingArtifacts:
     env_kwargs = dict(env_kwargs or {})
     ppo_kwargs = dict(ppo_kwargs or {})
@@ -408,6 +444,7 @@ def train_route_agent(
                     background_route_std=background_route_std,
                     systemic_batch_size=systemic_batch_size,
                     systemic_std_penalty_weight=systemic_std_penalty_weight,
+                    max_workers=systemic_max_workers,
                     seed=seed,
                     **env_kwargs,
                 )
@@ -425,6 +462,7 @@ def train_route_agent(
     callback = BestWorstRouteCallback(
         drive_graph_raw=drive_graph_raw,
         output_dir=output_dir,
+        heartbeat_seconds=heartbeat_seconds,
     )
     model.learn(total_timesteps=int(total_timesteps), callback=callback)
     history_csv, snapshot_csv = export_training_results_csvs(

@@ -1011,19 +1011,47 @@ class JeepneyRouteEnv(gym.Env):
         candidates.sort(key=lambda cand: self._signed_angle(ref, cand.vector_xy))
         self.current_candidates = candidates
 
-    def _evaluate_closed_route(self) -> RouteFitnessResult:
+    def _closed_route_path_nodes(self) -> list[int]:
+        if len(self.path_node_ids) < 2:
+            if self.current_node_id is None:
+                return list(self.path_node_ids)
+            node_id = int(self.current_node_id)
+            candidates = self.current_candidates or list(self._successors.get(node_id, []))
+            if candidates:
+                best = min(candidates, key=lambda cand: cand.length_m)
+                return [node_id, int(best.next_node_id), node_id]
+            return [node_id, node_id]
+        return _stitch_physical_loop(self.path_node_ids, self.drive_graph_raw)
+
+    def _evaluate_closed_route(self, route_node_ids: Sequence[int] | None = None) -> RouteFitnessResult:
+        closed_nodes = list(self.path_node_ids if route_node_ids is None else route_node_ids)
         if self.systemic_evaluator is None:
             return calculate_route_fitness(
-                list(self.path_node_ids),
+                closed_nodes,
                 passenger_map=self.passenger_map,
                 drive_graph_raw=self.drive_graph_raw,
                 drive_graph_proj=self.drive_graph_proj,
                 seed=int(self.np_random.integers(0, 2**32 - 1)),
             )
         return self.systemic_evaluator.evaluate(
-            list(self.path_node_ids),
+            closed_nodes,
             seed=int(self.np_random.integers(0, 2**32 - 1)),
         )
+
+    def _finalize_closed_route(
+        self,
+        *,
+        natural: bool,
+        penalty: float = 0.0,
+    ) -> tuple[float, RouteFitnessResult, list[int]]:
+        closed_nodes = self._closed_route_path_nodes()
+        fitness = self._evaluate_closed_route(closed_nodes)
+        reward = float(fitness.reward)
+        if natural:
+            reward += self.closure_bonus
+        else:
+            reward -= float(penalty)
+        return reward, fitness, closed_nodes
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if seed is not None:
@@ -1110,10 +1138,13 @@ class JeepneyRouteEnv(gym.Env):
         self._set_candidates(next_node_id)
 
         terminated = False
-        if next_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes:
+        if next_node_id == self.origin_node_id:
             terminated = True
-            fitness = self._evaluate_closed_route()
-            reward = float(fitness.reward)
+            natural = len(self.path_node_ids) >= self.min_route_nodes
+            reward, fitness, closed_nodes = self._finalize_closed_route(
+                natural=natural,
+                penalty=self.termination_penalty,
+            )
 
         info = {
             "turn_angle_rad": turn_angle,
@@ -1129,7 +1160,8 @@ class JeepneyRouteEnv(gym.Env):
             info["route_fitness"] = fitness
             info["fitness_reward"] = float(fitness.reward)
             info["fitness_average_gtc"] = float(fitness.average_gtc)
-            info["route_path_node_ids"] = list(self.path_node_ids)
+            info["route_path_node_ids"] = list(closed_nodes)
+            info["closure_mode"] = "natural" if len(self.path_node_ids) >= self.min_route_nodes else "forced"
             info["terminated_reason"] = "closed_loop"
         return reward, terminated, info
 
@@ -1148,11 +1180,10 @@ class JeepneyRouteEnv(gym.Env):
         if action == terminate_action:
             closed = self.current_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes
             terminated = True
-            if closed:
-                fitness = self._evaluate_closed_route()
-                reward = float(fitness.reward)
-            else:
-                reward = -self.termination_penalty
+            reward, fitness, closed_nodes = self._finalize_closed_route(
+                natural=closed,
+                penalty=self.termination_penalty,
+            )
             info = {
                 "turn_angle_rad": 0.0,
                 "turn_penalty": 0.0,
@@ -1162,13 +1193,13 @@ class JeepneyRouteEnv(gym.Env):
                 "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
                 "route_area_m2": self._current_polygon_area_m2(),
                 "state_vector": self._flat_state(self._observation()),
-                "terminated_reason": "closed_loop" if closed else "agent_terminated",
+                "terminated_reason": "closed_loop",
+                "closure_mode": "natural" if closed else "forced",
             }
-            if closed:
-                info["route_fitness"] = fitness
-                info["fitness_reward"] = float(fitness.reward)
-                info["fitness_average_gtc"] = float(fitness.average_gtc)
-                info["route_path_node_ids"] = list(self.path_node_ids)
+            info["route_fitness"] = fitness
+            info["fitness_reward"] = float(fitness.reward)
+            info["fitness_average_gtc"] = float(fitness.average_gtc)
+            info["route_path_node_ids"] = list(closed_nodes)
             observation = self._observation()
             return observation, float(reward), terminated, truncated, info
 
@@ -1176,6 +1207,12 @@ class JeepneyRouteEnv(gym.Env):
             reward = -self.invalid_action_penalty
             self.steps_taken += 1
             truncated = self.steps_taken >= self.max_steps
+            reward, fitness, closed_nodes = self._finalize_closed_route(
+                natural=False,
+                penalty=self.invalid_action_penalty,
+            )
+            terminated = True
+            truncated = False
             observation = self._observation()
             info = {
                 "turn_angle_rad": 0.0,
@@ -1186,8 +1223,12 @@ class JeepneyRouteEnv(gym.Env):
                 "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
                 "route_area_m2": self._current_polygon_area_m2(),
                 "state_vector": self._flat_state(observation),
-                "terminated_reason": "invalid_action",
-                "route_path_node_ids": list(self.path_node_ids),
+                "terminated_reason": "closed_loop",
+                "closure_mode": "forced",
+                "route_fitness": fitness,
+                "fitness_reward": float(fitness.reward),
+                "fitness_average_gtc": float(fitness.average_gtc),
+                "route_path_node_ids": list(closed_nodes),
             }
             return observation, float(reward), terminated, truncated, info
 
@@ -1196,18 +1237,37 @@ class JeepneyRouteEnv(gym.Env):
 
         if len(self.current_candidates) == 0 and not terminated:
             terminated = True
-            reward -= self.dead_end_penalty
-            info["terminated_reason"] = "dead_end"
+            reward, fitness, closed_nodes = self._finalize_closed_route(
+                natural=False,
+                penalty=self.dead_end_penalty,
+            )
+            info["route_fitness"] = fitness
+            info["fitness_reward"] = float(fitness.reward)
+            info["fitness_average_gtc"] = float(fitness.average_gtc)
+            info["route_path_node_ids"] = list(closed_nodes)
+            info["closure_mode"] = "forced"
+            info["terminated_reason"] = "closed_loop"
         elif terminated:
             info["terminated_reason"] = "closed_loop"
 
         truncated = self.steps_taken >= self.max_steps and not terminated
         if truncated:
-            info["terminated_reason"] = "max_steps"
+            reward, fitness, closed_nodes = self._finalize_closed_route(
+                natural=False,
+                penalty=self.termination_penalty,
+            )
+            terminated = True
+            info["route_fitness"] = fitness
+            info["fitness_reward"] = float(fitness.reward)
+            info["fitness_average_gtc"] = float(fitness.average_gtc)
+            info["route_path_node_ids"] = list(closed_nodes)
+            info["closure_mode"] = "forced"
+            info["terminated_reason"] = "closed_loop"
+            truncated = False
 
         observation = self._observation()
         info["state_vector"] = self._flat_state(observation)
-        info["route_path_node_ids"] = list(self.path_node_ids)
+        info.setdefault("route_path_node_ids", list(self.path_node_ids))
         return observation, float(reward), terminated, truncated, info
 
     def close(self) -> None:  # pragma: no cover - trivial lifecycle hook
