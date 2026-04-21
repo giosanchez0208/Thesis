@@ -1,0 +1,12 @@
+metric,value
+episodes,106409.0
+closed_loop_episodes,66.0
+closed_loop_rate,0.000620248287268934
+episode_return_mean,-9.551514522365542
+episode_return_std,228.07483682184244
+episode_return_min,-14566.029272310949
+episode_return_max,-4.0
+fitness_reward_mean,-9.54836185146821
+average_gtc_mean,5629.880880296507
+std_gtc_mean,
+route_node_count_mean,0.004106795477826124
