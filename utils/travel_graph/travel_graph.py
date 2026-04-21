@@ -659,6 +659,9 @@ class TravelGraphManager:
         nodes_csv=None,
         routes=None,
         *,
+        edges_df: pd.DataFrame | None = None,
+        nodes_df: pd.DataFrame | None = None,
+        quiet: bool = False,
         walk_wt: float,
         ride_wt: float,
         wait_wt: float,
@@ -670,8 +673,15 @@ class TravelGraphManager:
         self._transfer_wt = float(transfer_wt)
         self._routes      = list(routes) if routes is not None else None
 
-        self._edges_df  = self._load_edges(_Path(edges_csv))
-        self._nodes_df  = self._load_nodes(_Path(nodes_csv)) if nodes_csv else None
+        if edges_df is not None:
+            self._edges_df = edges_df.copy()
+        else:
+            self._edges_df = self._load_edges(_Path(edges_csv))
+
+        if nodes_df is not None:
+            self._nodes_df = nodes_df.copy()
+        else:
+            self._nodes_df = self._load_nodes(_Path(nodes_csv)) if nodes_csv else None
 
         # Apply route filtering if routes were supplied
         self._active_edges = (
@@ -689,7 +699,7 @@ class TravelGraphManager:
         self._accessible  = self._build_accessible_index()
         self._node_coords = self._build_node_coords()
 
-        self._sanity_check()
+        self._sanity_check(quiet=bool(quiet))
 
     # ── Private: loading ─────────────────────────────────────────────────────
 
@@ -736,22 +746,27 @@ class TravelGraphManager:
             valid_pairs |= route.edge_pairs
             valid_nodes |= route.node_set
 
-        def _keep(row) -> bool:
-            et = row.edge_type
-            if et in _WALK_TYPES or et == _DIRECT_TYPE:
-                return True
-            if et == _RIDE_TYPE:
-                return (row.u, row.v) in valid_pairs
-            if et == _WAIT_TYPE:
-                return row.v in valid_nodes      # sw → ride: is the stop on a route?
-            if et == _ALIGHT_TYPE:
-                return row.u in valid_nodes      # ride → ew: is the stop on a route?
-            if et == _TRANSFER_TYPE:
-                return row.v in valid_nodes      # ew → ride: is the stop on a route?
-            return True
+        if not routes:
+            return df.reset_index(drop=True)
 
-        mask = df.apply(_keep, axis=1)
-        return df[mask].reset_index(drop=True)
+        valid_pairs_index = pd.MultiIndex.from_tuples(sorted(valid_pairs)) if valid_pairs else None
+        edge_types = df["edge_type"].astype(str)
+        mask = edge_types.isin(_WALK_TYPES | {_DIRECT_TYPE}).to_numpy(copy=True)
+
+        ride_mask = edge_types.eq(_RIDE_TYPE).to_numpy(copy=True)
+        if ride_mask.any() and valid_pairs_index is not None:
+            ride_pairs = pd.MultiIndex.from_frame(df.loc[ride_mask, ["u", "v"]])
+            mask[ride_mask] = ride_pairs.isin(valid_pairs_index)
+        else:
+            mask[ride_mask] = False
+
+        if valid_nodes:
+            valid_nodes_index = pd.Index(list(valid_nodes))
+            mask |= edge_types.eq(_WAIT_TYPE).to_numpy(copy=True) & df["v"].isin(valid_nodes_index).to_numpy(copy=True)
+            mask |= edge_types.eq(_ALIGHT_TYPE).to_numpy(copy=True) & df["u"].isin(valid_nodes_index).to_numpy(copy=True)
+            mask |= edge_types.eq(_TRANSFER_TYPE).to_numpy(copy=True) & df["v"].isin(valid_nodes_index).to_numpy(copy=True)
+
+        return df.loc[mask].reset_index(drop=True)
 
     # ── Private: graph + index construction ─────────────────────────────────
 
@@ -809,14 +824,11 @@ class TravelGraphManager:
         if not self._routes:
             return {}
         index: dict[str, list[str]] = {}
+        ride_edges = self._active_edges[self._active_edges["edge_type"] == _RIDE_TYPE]
+        pair_to_edge_ids = {pair: list(group["edge_id"]) for pair, group in ride_edges.groupby(["u", "v"], sort=False)}
         for route in self._routes:
             for u_node, v_node in route.edge_pairs:
-                matches = self._active_edges[
-                    (self._active_edges["u"] == u_node)
-                    & (self._active_edges["v"] == v_node)
-                    & (self._active_edges["edge_type"] == _RIDE_TYPE)
-                ]["edge_id"]
-                for edge_id in matches:
+                for edge_id in pair_to_edge_ids.get((u_node, v_node), []):
                     index.setdefault(edge_id, []).append(route.route_id)
         return index
 
@@ -836,13 +848,15 @@ class TravelGraphManager:
             for row in self._nodes_df.itertuples(index=False)
         }
 
-    def _sanity_check(self) -> None:
+    def _sanity_check(self, *, quiet: bool = False) -> None:
         assert self._graph.number_of_nodes() > 0, "Graph has no nodes."
         assert self._graph.number_of_edges() > 0, "Graph has no edges."
         actual_types = set(self._active_edges["edge_type"].unique())
         unknown = actual_types - _ALL_KNOWN_TYPES
         if unknown:
             warnings.warn(f"Unexpected edge_type(s): {unknown}")
+        if quiet:
+            return
         route_str = (
             f"{len(self._routes)} routes"
             if self._routes is not None else "full ride graph"

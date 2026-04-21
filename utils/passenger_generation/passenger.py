@@ -1,3 +1,5 @@
+import numpy as np
+
 from .passenger_map import PassengerMap
 from enum import Enum
 from typing import List, Optional
@@ -26,6 +28,7 @@ class Passenger:
         end_node_id: str = None,
         passenger_map: PassengerMap = None,
         verbose: bool = False,
+        random_state: int | np.random.Generator | None = None,
     ):
         """
         Parameters
@@ -48,10 +51,20 @@ class Passenger:
                 raise RuntimeError(f"Failed to initialize PassengerMap: {e}") from e
         else:
             self.passenger_map = passenger_map
+
+        if isinstance(random_state, np.random.Generator):
+            rng = random_state
+        elif random_state is None:
+            rng = None
+        else:
+            rng = np.random.default_rng(random_state)
         
         # Sample or use provided start/end positions
         if start_node_id is None:
-            start_sample = self.passenger_map.generate_nodes(n_points=1)
+            start_sample = self.passenger_map.generate_nodes(
+                n_points=1,
+                random_state=None if rng is None else int(rng.integers(0, 2**32 - 1)),
+            )
             self.start_node_id = start_sample['base_osmid'].iloc[0]
             self.start_lat = start_sample['lat'].iloc[0]
             self.start_lon = start_sample['lon'].iloc[0]
@@ -70,7 +83,10 @@ class Passenger:
         # Sample end_pos, ensure it's different from start_pos
         if end_node_id is None:
             while True:
-                end_sample = self.passenger_map.generate_nodes(n_points=1)
+                end_sample = self.passenger_map.generate_nodes(
+                    n_points=1,
+                    random_state=None if rng is None else int(rng.integers(0, 2**32 - 1)),
+                )
                 self.end_node_id = end_sample['base_osmid'].iloc[0]
                 if self.start_node_id != self.end_node_id:
                     break

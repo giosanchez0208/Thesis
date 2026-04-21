@@ -198,7 +198,14 @@ class Simulation:
     ) -> list[Passenger]:
         if batch_size is None:
             batch_size = self.sample_passenger_batch_size(seed=seed)
-        passengers = [Passenger(passenger_map=self.passenger_map) for _ in range(int(batch_size))]
+        rng = np.random.default_rng(seed)
+        passengers = [
+            Passenger(
+                passenger_map=self.passenger_map,
+                random_state=int(rng.integers(0, 2**32 - 1)),
+            )
+            for _ in range(int(batch_size))
+        ]
         self.passengers.extend(passengers)
         return passengers
 

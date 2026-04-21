@@ -7,21 +7,20 @@ final route under generalized travel cost.
 
 from __future__ import annotations
 
-import io
 from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
 from math import cos, hypot, pi, sin
 from pathlib import Path as _Path
-from contextlib import redirect_stdout
 from typing import Any, Sequence
 
 import networkx as nx
 import numpy as np
+import pandas as pd
 from shapely.geometry import MultiPoint, Polygon
 
 from .passenger_generation import Passenger, PassengerMap, Simulation, SimulationConfig
-from .travel_graph import JeepneyRoute, TravelGraphManager, load_graphs_for_study_area, node_table_from_graph
+from .travel_graph import JeepneyRoute, TravelGraphManager, load_graphs_for_study_area, make_coord_key, node_table_from_graph
 
 try:  # pragma: no cover - optional dependency
     import gymnasium as gym
@@ -85,6 +84,7 @@ class RouteFitnessResult:
 
     reward: float
     average_gtc: float
+    passenger_gtc_std: float
     total_gtc: float
     passenger_count: int
     served_passenger_count: int
@@ -176,11 +176,138 @@ def _physical_path_to_route_nodes(
     return _stitch_physical_loop(physical_nodes, drive_graph_raw)
 
 
-def _physical_nodes_to_ride_route(route_nodes: Sequence[int], route_id: str) -> JeepneyRoute:
-    ride_nodes = [f"ride_{int(node_id)}" for node_id in route_nodes]
+def _build_physical_to_ride_node_map(
+    drive_graph_raw: nx.MultiDiGraph,
+    drive_graph_proj: nx.MultiDiGraph,
+    travel_nodes_df: pd.DataFrame,
+) -> dict[int, str]:
+    physical_nodes = node_table_from_graph(drive_graph_raw, drive_graph_proj)
+    physical_nodes["base_node_id"] = physical_nodes["base_node_id"].astype(int)
+    physical_nodes["coord_key"] = make_coord_key(physical_nodes, "lon", "lat")
+
+    ride_nodes = travel_nodes_df.copy()
+    if "layer" in ride_nodes.columns:
+        ride_nodes = ride_nodes[ride_nodes["layer"].astype(str) == "ride"].copy()
+    if ride_nodes.empty:
+        raise ValueError("The travel graph has no ride-layer nodes to map against.")
+
+    ride_nodes["base_node_id"] = ride_nodes["base_node_id"].astype(int) if "base_node_id" in ride_nodes.columns else ride_nodes["node_id"].astype(str)
+    if "node_id" not in ride_nodes.columns:
+        ride_nodes["node_id"] = ride_nodes["base_node_id"].astype(str)
+    ride_nodes["coord_key"] = make_coord_key(ride_nodes, "lon", "lat")
+
+    merged = physical_nodes[["base_node_id", "coord_key"]].merge(
+        ride_nodes[["node_id", "coord_key"]],
+        on="coord_key",
+        how="inner",
+    )
+    node_map = {
+        int(row.base_node_id): str(row.node_id)
+        for row in merged.itertuples(index=False)
+    }
+
+    missing = physical_nodes.loc[~physical_nodes["base_node_id"].isin(node_map.keys())].copy()
+    if not missing.empty:
+        ride_xy = ride_nodes[["lon", "lat"]].to_numpy(dtype=float)
+        ride_ids = ride_nodes["node_id"].astype(str).to_numpy()
+        for row in missing.itertuples(index=False):
+            source_xy = np.asarray([float(row.lon), float(row.lat)], dtype=float)
+            deltas = ride_xy - source_xy
+            nearest_idx = int(np.argmin(np.sum(deltas * deltas, axis=1)))
+            node_map[int(row.base_node_id)] = str(ride_ids[nearest_idx])
+
+    if not node_map:
+        raise ValueError("Could not map the generated physical route onto the ride layer.")
+
+    return node_map
+
+
+def _physical_nodes_to_ride_route(
+    route_nodes: Sequence[int],
+    route_id: str,
+    physical_to_ride_node_map: dict[int, str],
+) -> JeepneyRoute:
+    ride_nodes: list[str] = []
+    missing_nodes: list[int] = []
+    for node_id in route_nodes:
+        ride_node_id = physical_to_ride_node_map.get(int(node_id))
+        if ride_node_id is None:
+            missing_nodes.append(int(node_id))
+            continue
+        ride_nodes.append(ride_node_id)
+
+    if missing_nodes:
+        raise ValueError(
+            "Could not map some physical route nodes onto the ride layer: "
+            f"{missing_nodes[:5]}"
+        )
+
     if len(ride_nodes) > 1 and ride_nodes[0] == ride_nodes[-1]:
         ride_nodes = ride_nodes[:-1]
     return JeepneyRoute(route_id, ride_nodes)
+
+
+def _coerce_route_like(
+    route_like: Any,
+    route_id: str,
+    drive_graph_raw: nx.MultiDiGraph,
+    drive_graph_proj: nx.MultiDiGraph,
+    physical_to_ride_node_map: dict[int, str],
+) -> JeepneyRoute:
+    if isinstance(route_like, JeepneyRoute):
+        return route_like
+
+    if hasattr(route_like, "path_node_ids"):
+        return _physical_nodes_to_ride_route(
+            _physical_path_to_route_nodes(route_like, drive_graph_raw),
+            route_id=str(getattr(route_like, "route_id", route_id)),
+            physical_to_ride_node_map=physical_to_ride_node_map,
+        )
+
+    if hasattr(route_like, "nodes"):
+        nodes = list(getattr(route_like, "nodes"))
+        if nodes and all(str(node).startswith("ride_") for node in nodes):
+            return JeepneyRoute(str(getattr(route_like, "route_id", route_id)), nodes)
+        if nodes:
+            return _physical_nodes_to_ride_route(
+                _physical_path_to_route_nodes(nodes, drive_graph_raw),
+                route_id=str(getattr(route_like, "route_id", route_id)),
+                physical_to_ride_node_map=physical_to_ride_node_map,
+            )
+
+    if isinstance(route_like, Sequence) and not isinstance(route_like, (str, bytes)):
+        items = list(route_like)
+        if items and all(str(item).startswith("ride_") for item in items):
+            return JeepneyRoute(route_id, [str(item) for item in items])
+        return _physical_nodes_to_ride_route(
+            _physical_path_to_route_nodes(items, drive_graph_raw),
+            route_id=route_id,
+            physical_to_ride_node_map=physical_to_ride_node_map,
+        )
+
+    raise TypeError(f"Unsupported route object: {type(route_like).__name__}")
+
+
+def _normalize_background_routes(
+    background_routes: Sequence[Any] | None,
+    drive_graph_raw: nx.MultiDiGraph,
+    drive_graph_proj: nx.MultiDiGraph,
+    physical_to_ride_node_map: dict[int, str],
+) -> list[JeepneyRoute]:
+    routes: list[JeepneyRoute] = []
+    if not background_routes:
+        return routes
+    for index, route_like in enumerate(background_routes, start=1):
+        routes.append(
+            _coerce_route_like(
+                route_like,
+                f"BG{index:02d}",
+                drive_graph_raw,
+                drive_graph_proj,
+                physical_to_ride_node_map,
+            )
+        )
+    return routes
 
 
 @lru_cache(maxsize=8)
@@ -192,6 +319,28 @@ def _default_simulation_config(
         _Path(config_path) if config_path is not None else _DEFAULT_CONFIG_PATH,
         weight_profile=weight_profile,
     )
+
+
+def _graph_path_key(path_value: str | _Path | None, default_path: _Path) -> str:
+    return str(_Path(path_value)) if path_value is not None else str(default_path)
+
+
+@lru_cache(maxsize=8)
+def _load_fitness_graph_frames(
+    edges_csv: str | _Path | None = None,
+    nodes_csv: str | _Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    edges_path = _Path(edges_csv) if edges_csv is not None else _DEFAULT_EDGES_CSV
+    nodes_path = _Path(nodes_csv) if nodes_csv is not None else _DEFAULT_NODES_CSV
+    edges_df = pd.read_csv(
+        edges_path,
+        dtype={"edge_id": str, "u": str, "v": str, "edge_type": str},
+    )
+    nodes_df = pd.read_csv(
+        nodes_path,
+        dtype={"node_id": str},
+    )
+    return edges_df, nodes_df
 
 
 def _edge_weight_from_manager(manager: TravelGraphManager, edge_id: str) -> float:
@@ -212,41 +361,61 @@ def _evaluate_passenger_batch(
     total_cost = 0.0
     served_count = 0
     unserved_count = 0
+    passenger_costs: list[float] = []
 
     manager = simulation.travel_graph_mgr
 
     for passenger in passengers:
         try:
-            simulation.prepare_passenger(passenger)
-            path_edges = list(passenger.shortest_path_edges)
-            path_cost = sum(_edge_weight_from_manager(manager, edge_id) for edge_id in path_edges)
-            served_count += 1
-            total_cost += path_cost
+            payload = simulation.prepare_passenger(passenger)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
+            payload = {"found": False}
+        if not payload.get("found", True):
             unserved_count += 1
-            start_graph_node_id = simulation.find_nearest_node(passenger.start_lat, passenger.start_lon, layer="start_walk")
-            end_graph_node_id = simulation.find_nearest_node(passenger.end_lat, passenger.end_lon, layer="end_walk")
-            if start_graph_node_id is None or end_graph_node_id is None:
-                total_cost += float(unserved_penalty_beta)
-                continue
-            try:
-                fallback_edges = baseline_manager.calculate_shortest_path(start_graph_node_id, end_graph_node_id)
-                fallback_cost = sum(_edge_weight_from_manager(baseline_manager, edge_id) for edge_id in fallback_edges)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                fallback_cost = float(
-                    np.hypot(
-                        float(passenger.start_lat) - float(passenger.end_lat),
-                        float(passenger.start_lon) - float(passenger.end_lon),
+            start_graph_node_id = payload.get("start_graph_node") or simulation.find_nearest_node(
+                passenger.start_lat, passenger.start_lon, layer="start_walk"
+            )
+            end_graph_node_id = payload.get("end_graph_node") or simulation.find_nearest_node(
+                passenger.end_lat, passenger.end_lon, layer="end_walk"
+            )
+            elapsed_time = float(passenger.total_time)
+            remaining_travel_time = 0.0
+            if start_graph_node_id is not None and end_graph_node_id is not None:
+                try:
+                    fallback_edges = baseline_manager.calculate_shortest_path(
+                        start_graph_node_id,
+                        end_graph_node_id,
                     )
-                    * 111_000.0
-                )
-            total_cost += fallback_cost * float(unserved_penalty_beta)
+                    remaining_travel_time = sum(
+                        _edge_weight_from_manager(baseline_manager, edge_id)
+                        for edge_id in fallback_edges
+                    )
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    remaining_travel_time = float(
+                        np.hypot(
+                            float(passenger.start_lat) - float(passenger.end_lat),
+                            float(passenger.start_lon) - float(passenger.end_lon),
+                        )
+                        * 111_000.0
+                    )
+            passenger_cost = elapsed_time + (remaining_travel_time * float(unserved_penalty_beta))
+            total_cost += passenger_cost
+            passenger_costs.append(passenger_cost)
+            continue
+
+        path_edges = list(passenger.shortest_path_edges)
+        path_cost = sum(_edge_weight_from_manager(manager, edge_id) for edge_id in path_edges)
+        served_count += 1
+        total_cost += path_cost
+        passenger_costs.append(path_cost)
 
     passenger_count = len(passengers)
     average_gtc = total_cost / passenger_count if passenger_count else 0.0
+    passenger_gtc_std = float(np.std(passenger_costs, ddof=0)) if len(passenger_costs) > 1 else 0.0
     return RouteFitnessResult(
         reward=-float(average_gtc),
         average_gtc=float(average_gtc),
+        passenger_gtc_std=passenger_gtc_std,
         total_gtc=float(total_cost),
         passenger_count=passenger_count,
         served_passenger_count=served_count,
@@ -261,6 +430,7 @@ def _evaluate_passenger_batch(
 
 def calculate_route_fitness(
     generated_path: Any,
+    background_routes: Sequence[Any] | None = None,
     *,
     passenger_map: PassengerMap | None = None,
     drive_graph_raw: nx.MultiDiGraph | None = None,
@@ -283,6 +453,9 @@ def calculate_route_fitness(
     """
 
     config = _default_simulation_config(config_path, weight_profile)
+    edges_cache_key = _graph_path_key(edges_csv, _DEFAULT_EDGES_CSV)
+    nodes_cache_key = _graph_path_key(nodes_csv, _DEFAULT_NODES_CSV)
+    edges_df, nodes_df = _load_fitness_graph_frames(edges_cache_key, nodes_cache_key)
     if drive_graph_raw is None or drive_graph_proj is None:
         (
             _study_area_gdf,
@@ -298,27 +471,44 @@ def calculate_route_fitness(
             point_dist=30_000.0,
         )
 
+    physical_to_ride_node_map = _build_physical_to_ride_node_map(drive_graph_raw, drive_graph_proj, nodes_df)
     route_nodes = _physical_path_to_route_nodes(generated_path, drive_graph_raw)
-    route = _physical_nodes_to_ride_route(route_nodes, route_id=route_id)
+    route = _physical_nodes_to_ride_route(
+        route_nodes,
+        route_id=route_id,
+        physical_to_ride_node_map=physical_to_ride_node_map,
+    )
+    background_jeep_routes = _normalize_background_routes(
+        background_routes,
+        drive_graph_raw,
+        drive_graph_proj,
+        physical_to_ride_node_map,
+    )
     passenger_map = passenger_map or PassengerMap()
-    with redirect_stdout(io.StringIO()):
-        manager = TravelGraphManager(
-            edges_csv or _DEFAULT_EDGES_CSV,
-            nodes_csv or _DEFAULT_NODES_CSV,
-            routes=[route],
-            walk_wt=config.walk_wt,
-            ride_wt=config.ride_wt,
-            wait_wt=config.wait_wt,
-            transfer_wt=config.transfer_wt,
-        )
-        baseline_manager = TravelGraphManager(
-            edges_csv or _DEFAULT_EDGES_CSV,
-            nodes_csv or _DEFAULT_NODES_CSV,
-            walk_wt=config.walk_wt,
-            ride_wt=config.ride_wt,
-            wait_wt=config.wait_wt,
-            transfer_wt=config.transfer_wt,
-        )
+    manager = TravelGraphManager(
+        edges_csv or _DEFAULT_EDGES_CSV,
+        nodes_csv or _DEFAULT_NODES_CSV,
+        routes=background_jeep_routes + [route] if background_jeep_routes else [route],
+        edges_df=edges_df,
+        nodes_df=nodes_df,
+        quiet=True,
+        walk_wt=config.walk_wt,
+        ride_wt=config.ride_wt,
+        wait_wt=config.wait_wt,
+        transfer_wt=config.transfer_wt,
+    )
+    baseline_manager = TravelGraphManager(
+        edges_csv or _DEFAULT_EDGES_CSV,
+        nodes_csv or _DEFAULT_NODES_CSV,
+        routes=background_jeep_routes or None,
+        edges_df=edges_df,
+        nodes_df=nodes_df,
+        quiet=True,
+        walk_wt=config.walk_wt,
+        ride_wt=config.ride_wt,
+        wait_wt=config.wait_wt,
+        transfer_wt=config.transfer_wt,
+    )
     simulation = Simulation(
         manager,
         routes=[route],

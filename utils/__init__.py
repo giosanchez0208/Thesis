@@ -11,6 +11,7 @@ Provides:
 
 from .baseline_route_generator import BaselineRouteGenerator, BaselineRoute
 from .jeepney_route_env import JeepneyRouteEnv, RouteFitnessResult, calculate_route_fitness
+from .systemic_fitness_evaluator import SystemicFitnessEvaluator, SystemicFitnessResult
 from .travel_graph import (
     TravelGraphManager,
     JeepneyRoute,
@@ -62,6 +63,8 @@ __all__ = [
     "JeepneyRouteEnv",
     "RouteFitnessResult",
     "calculate_route_fitness",
+    "SystemicFitnessEvaluator",
+    "SystemicFitnessResult",
     # Graph construction helpers
     "make_coord_key",
     "resolve_study_area_boundary",

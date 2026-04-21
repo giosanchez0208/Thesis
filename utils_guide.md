@@ -207,6 +207,24 @@ A compact route record containing:
 
 This module is the baseline route-generation entry point for B4 and later RL work.
 
+## `utils/systemic_fitness_evaluator.py`
+
+This module performs the multi-system statistical fitness test for route synergy.
+
+### `SystemicFitnessEvaluator`
+
+What it does:
+
+- samples the number of evaluation tests from a configurable mean/spread
+- samples the number of background noise routes per system from a configurable mean/spread
+- generates multiple background route systems with `BaselineRouteGenerator`
+- injects the candidate route into each 3-layer behavioral graph instance
+- reuses the shared in-memory physical graph context across evaluations
+- returns the average and standard deviation of Generalized Travel Cost across runs
+- returns passenger-level GTC spread for future robustness analysis
+
+Use this when you want to compare routes under stochastic sensitivity analysis rather than a single isolated background system.
+
 ## `utils/jeepney_route_env.py`
 
 This module provides the Gymnasium-style RL environment for geometric route construction.
