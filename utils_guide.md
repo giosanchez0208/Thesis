@@ -219,6 +219,7 @@ What it does:
 - exposes coordinate-invariant geometric observations
 - applies a continuous turn penalty during route construction
 - supports route closure as an episode-ending event
+- calls `calculate_route_fitness` on loop closure to score the final physical route on the 3-layer evaluation graph
 
 State design:
 

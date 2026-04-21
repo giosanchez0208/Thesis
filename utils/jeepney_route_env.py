@@ -7,17 +7,21 @@ final route under generalized travel cost.
 
 from __future__ import annotations
 
+import io
 from collections import deque
 from dataclasses import dataclass
-from math import atan2, cos, hypot, pi, sin
-from typing import Any
+from functools import lru_cache
+from math import cos, hypot, pi, sin
+from pathlib import Path as _Path
+from contextlib import redirect_stdout
+from typing import Any, Sequence
 
 import networkx as nx
 import numpy as np
 from shapely.geometry import MultiPoint, Polygon
 
-from .passenger_generation import PassengerMap
-from .travel_graph import load_graphs_for_study_area, node_table_from_graph
+from .passenger_generation import Passenger, PassengerMap, Simulation, SimulationConfig
+from .travel_graph import JeepneyRoute, TravelGraphManager, load_graphs_for_study_area, node_table_from_graph
 
 try:  # pragma: no cover - optional dependency
     import gymnasium as gym
@@ -63,6 +67,280 @@ except ImportError:  # pragma: no cover - local compatibility shim
 
     gym = SimpleNamespace(Env=_Env)
     spaces = SimpleNamespace(Discrete=_Discrete, Box=_Box, Dict=_Dict)
+
+
+_REPO_ROOT = _Path(__file__).resolve().parents[1]
+_DEFAULT_CONFIG_PATH = _REPO_ROOT / "configs" / "travel_graph_config.yaml"
+_DEFAULT_EDGES_CSV = _REPO_ROOT / "data" / "iligan_travel_graph.csv"
+_DEFAULT_NODES_CSV = _REPO_ROOT / "data" / "travel_graph_nodes.csv"
+_DEFAULT_WEIGHT_PROFILE = "full_ride_manager"
+_DEFAULT_UNSERVED_PENALTY_BETA = 2.0
+
+__all__ = ["RouteFitnessResult", "calculate_route_fitness", "JeepneyRouteEnv"]
+
+
+@dataclass(slots=True)
+class RouteFitnessResult:
+    """Summary of passenger-based route fitness."""
+
+    reward: float
+    average_gtc: float
+    total_gtc: float
+    passenger_count: int
+    served_passenger_count: int
+    unserved_passenger_count: int
+    unserved_penalty_beta: float
+    route_node_count: int
+    route_edge_count: int
+    batch_size: int
+    seed: int | None
+
+    def __float__(self) -> float:
+        return float(self.reward)
+
+
+def _coerce_node_id(value: Any) -> int | None:
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if token.isdigit() or (token.startswith("-") and token[1:].isdigit()):
+            return int(token)
+        if "_" in token:
+            tail = token.rsplit("_", 1)[-1]
+            if tail.isdigit() or (tail.startswith("-") and tail[1:].isdigit()):
+                return int(tail)
+    return None
+
+
+def _extract_physical_path_nodes(generated_path: Any) -> list[int]:
+    if generated_path is None:
+        raise ValueError("generated_path cannot be None.")
+
+    if hasattr(generated_path, "path_node_ids"):
+        raw_nodes = list(getattr(generated_path, "path_node_ids"))
+    elif hasattr(generated_path, "nodes") and not isinstance(generated_path, (str, bytes)):
+        raw_nodes = list(getattr(generated_path, "nodes"))
+    elif isinstance(generated_path, Sequence) and not isinstance(generated_path, (str, bytes)):
+        raw_nodes = list(generated_path)
+    else:
+        raise TypeError(
+            "generated_path must be a route object or a sequence of physical node IDs."
+        )
+
+    nodes: list[int] = []
+    for item in raw_nodes:
+        node_id = _coerce_node_id(item)
+        if node_id is None:
+            raise TypeError(f"Unsupported node identifier in generated_path: {item!r}")
+        nodes.append(node_id)
+
+    if len(nodes) < 2:
+        raise ValueError("generated_path needs at least two nodes.")
+    return nodes
+
+
+def _stitch_physical_loop(
+    node_ids: Sequence[int],
+    drive_graph_raw: nx.MultiDiGraph,
+) -> list[int]:
+    loop_nodes = list(node_ids)
+    if loop_nodes[0] != loop_nodes[-1]:
+        loop_nodes.append(loop_nodes[0])
+
+    stitched: list[int] = [int(loop_nodes[0])]
+    for start, end in zip(loop_nodes[:-1], loop_nodes[1:]):
+        start = int(start)
+        end = int(end)
+        if start == end:
+            continue
+        if drive_graph_raw.has_edge(start, end):
+            segment_nodes = [start, end]
+        else:
+            _, segment_nodes = nx.bidirectional_dijkstra(drive_graph_raw, start, end, weight="length")
+        segment_nodes = [int(node_id) for node_id in segment_nodes]
+        if stitched[-1] == segment_nodes[0]:
+            stitched.extend(segment_nodes[1:])
+        else:
+            stitched.extend(segment_nodes)
+    return stitched
+
+
+def _physical_path_to_route_nodes(
+    generated_path: Any,
+    drive_graph_raw: nx.MultiDiGraph,
+) -> list[int]:
+    physical_nodes = _extract_physical_path_nodes(generated_path)
+    if all(drive_graph_raw.has_edge(u, v) for u, v in zip(physical_nodes[:-1], physical_nodes[1:])):
+        return physical_nodes
+    return _stitch_physical_loop(physical_nodes, drive_graph_raw)
+
+
+def _physical_nodes_to_ride_route(route_nodes: Sequence[int], route_id: str) -> JeepneyRoute:
+    ride_nodes = [f"ride_{int(node_id)}" for node_id in route_nodes]
+    if len(ride_nodes) > 1 and ride_nodes[0] == ride_nodes[-1]:
+        ride_nodes = ride_nodes[:-1]
+    return JeepneyRoute(route_id, ride_nodes)
+
+
+@lru_cache(maxsize=8)
+def _default_simulation_config(
+    config_path: str | _Path | None = None,
+    weight_profile: str = _DEFAULT_WEIGHT_PROFILE,
+) -> SimulationConfig:
+    return SimulationConfig.from_yaml(
+        _Path(config_path) if config_path is not None else _DEFAULT_CONFIG_PATH,
+        weight_profile=weight_profile,
+    )
+
+
+def _edge_weight_from_manager(manager: TravelGraphManager, edge_id: str) -> float:
+    edge = manager.get_edge(edge_id)
+    if edge is None:
+        raise KeyError(f"Edge not found in travel graph manager: {edge_id}")
+    edge_data = manager.graph.get_edge_data(edge.u, edge.v) or {}
+    return float(edge_data.get("weight", edge.dist))
+
+
+def _evaluate_passenger_batch(
+    simulation: Simulation,
+    passengers: Sequence[Passenger],
+    *,
+    baseline_manager: TravelGraphManager,
+    unserved_penalty_beta: float,
+) -> RouteFitnessResult:
+    total_cost = 0.0
+    served_count = 0
+    unserved_count = 0
+
+    manager = simulation.travel_graph_mgr
+
+    for passenger in passengers:
+        try:
+            simulation.prepare_passenger(passenger)
+            path_edges = list(passenger.shortest_path_edges)
+            path_cost = sum(_edge_weight_from_manager(manager, edge_id) for edge_id in path_edges)
+            served_count += 1
+            total_cost += path_cost
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            unserved_count += 1
+            start_graph_node_id = simulation.find_nearest_node(passenger.start_lat, passenger.start_lon, layer="start_walk")
+            end_graph_node_id = simulation.find_nearest_node(passenger.end_lat, passenger.end_lon, layer="end_walk")
+            if start_graph_node_id is None or end_graph_node_id is None:
+                total_cost += float(unserved_penalty_beta)
+                continue
+            try:
+                fallback_edges = baseline_manager.calculate_shortest_path(start_graph_node_id, end_graph_node_id)
+                fallback_cost = sum(_edge_weight_from_manager(baseline_manager, edge_id) for edge_id in fallback_edges)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                fallback_cost = float(
+                    np.hypot(
+                        float(passenger.start_lat) - float(passenger.end_lat),
+                        float(passenger.start_lon) - float(passenger.end_lon),
+                    )
+                    * 111_000.0
+                )
+            total_cost += fallback_cost * float(unserved_penalty_beta)
+
+    passenger_count = len(passengers)
+    average_gtc = total_cost / passenger_count if passenger_count else 0.0
+    return RouteFitnessResult(
+        reward=-float(average_gtc),
+        average_gtc=float(average_gtc),
+        total_gtc=float(total_cost),
+        passenger_count=passenger_count,
+        served_passenger_count=served_count,
+        unserved_passenger_count=unserved_count,
+        unserved_penalty_beta=float(unserved_penalty_beta),
+        route_node_count=0,
+        route_edge_count=0,
+        batch_size=passenger_count,
+        seed=None,
+    )
+
+
+def calculate_route_fitness(
+    generated_path: Any,
+    *,
+    passenger_map: PassengerMap | None = None,
+    drive_graph_raw: nx.MultiDiGraph | None = None,
+    drive_graph_proj: nx.MultiDiGraph | None = None,
+    config_path: str | _Path | None = None,
+    edges_csv: str | _Path | None = None,
+    nodes_csv: str | _Path | None = None,
+    batch_size: int | None = None,
+    seed: int | None = None,
+    route_id: str = "FIT_ROUTE",
+    weight_profile: str = _DEFAULT_WEIGHT_PROFILE,
+    unserved_penalty_beta: float = _DEFAULT_UNSERVED_PENALTY_BETA,
+) -> RouteFitnessResult:
+    """
+    Score a generated physical route against passenger generalized travel cost.
+
+    The supplied physical path is inserted into the existing three-layer travel
+    graph as a ride-layer route, then a stochastic passenger batch is sampled
+    from the heatmap utilities and evaluated with Dijkstra shortest paths.
+    """
+
+    config = _default_simulation_config(config_path, weight_profile)
+    if drive_graph_raw is None or drive_graph_proj is None:
+        (
+            _study_area_gdf,
+            _boundary_source,
+            _graph_source,
+            drive_graph_raw,
+            drive_graph_proj,
+            _drive_graph_raw,
+            _drive_graph_proj,
+        ) = load_graphs_for_study_area(
+            ["Iligan City, Philippines"],
+            point_query="Iligan City, Philippines",
+            point_dist=30_000.0,
+        )
+
+    route_nodes = _physical_path_to_route_nodes(generated_path, drive_graph_raw)
+    route = _physical_nodes_to_ride_route(route_nodes, route_id=route_id)
+    passenger_map = passenger_map or PassengerMap()
+    with redirect_stdout(io.StringIO()):
+        manager = TravelGraphManager(
+            edges_csv or _DEFAULT_EDGES_CSV,
+            nodes_csv or _DEFAULT_NODES_CSV,
+            routes=[route],
+            walk_wt=config.walk_wt,
+            ride_wt=config.ride_wt,
+            wait_wt=config.wait_wt,
+            transfer_wt=config.transfer_wt,
+        )
+        baseline_manager = TravelGraphManager(
+            edges_csv or _DEFAULT_EDGES_CSV,
+            nodes_csv or _DEFAULT_NODES_CSV,
+            walk_wt=config.walk_wt,
+            ride_wt=config.ride_wt,
+            wait_wt=config.wait_wt,
+            transfer_wt=config.transfer_wt,
+        )
+    simulation = Simulation(
+        manager,
+        routes=[route],
+        config=config,
+        passenger_map=passenger_map,
+    )
+    if batch_size is None:
+        batch_size = simulation.sample_passenger_batch_size(seed=seed)
+    batch_size = max(0, int(batch_size))
+    passengers = simulation.generate_passenger_batch(batch_size=batch_size, seed=seed)
+
+    result = _evaluate_passenger_batch(
+        simulation,
+        passengers,
+        baseline_manager=baseline_manager,
+        unserved_penalty_beta=unserved_penalty_beta,
+    )
+    result.route_node_count = len(route.nodes)
+    result.route_edge_count = len(route.edge_pairs)
+    result.batch_size = batch_size
+    result.seed = seed
+    return result
 
 
 @dataclass(slots=True)
@@ -539,6 +817,15 @@ class JeepneyRouteEnv(gym.Env):
         candidates.sort(key=lambda cand: self._signed_angle(ref, cand.vector_xy))
         self.current_candidates = candidates
 
+    def _evaluate_closed_route(self) -> RouteFitnessResult:
+        return calculate_route_fitness(
+            list(self.path_node_ids),
+            passenger_map=self.passenger_map,
+            drive_graph_raw=self.drive_graph_raw,
+            drive_graph_proj=self.drive_graph_proj,
+            seed=int(self.np_random.integers(0, 2**32 - 1)),
+        )
+
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if seed is not None:
             self.np_random = np.random.default_rng(seed)
@@ -626,7 +913,8 @@ class JeepneyRouteEnv(gym.Env):
         terminated = False
         if next_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes:
             terminated = True
-            reward += self.closure_bonus + min(self._current_polygon_area_m2() / (self._distance_scale**2), 1.0)
+            fitness = self._evaluate_closed_route()
+            reward = float(fitness.reward)
 
         info = {
             "turn_angle_rad": turn_angle,
@@ -638,6 +926,11 @@ class JeepneyRouteEnv(gym.Env):
             "route_area_m2": self._current_polygon_area_m2(),
             "state_vector": self._flat_state(self._observation()),
         }
+        if terminated:
+            info["route_fitness"] = fitness
+            info["fitness_reward"] = float(fitness.reward)
+            info["fitness_average_gtc"] = float(fitness.average_gtc)
+            info["terminated_reason"] = "closed_loop"
         return reward, terminated, info
 
     def step(self, action: int):
@@ -656,7 +949,8 @@ class JeepneyRouteEnv(gym.Env):
             closed = self.current_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes
             terminated = True
             if closed:
-                reward = self.closure_bonus + min(self._current_polygon_area_m2() / (self._distance_scale**2), 1.0)
+                fitness = self._evaluate_closed_route()
+                reward = float(fitness.reward)
             else:
                 reward = -self.termination_penalty
             info = {
@@ -670,6 +964,10 @@ class JeepneyRouteEnv(gym.Env):
                 "state_vector": self._flat_state(self._observation()),
                 "terminated_reason": "closed_loop" if closed else "agent_terminated",
             }
+            if closed:
+                info["route_fitness"] = fitness
+                info["fitness_reward"] = float(fitness.reward)
+                info["fitness_average_gtc"] = float(fitness.average_gtc)
             observation = self._observation()
             return observation, float(reward), terminated, truncated, info
 

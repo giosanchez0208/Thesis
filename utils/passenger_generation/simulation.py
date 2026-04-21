@@ -90,6 +90,7 @@ class Simulation:
         *,
         config: Optional[SimulationConfig] = None,
         config_path: str | Path | None = None,
+        passenger_map: Optional[PassengerMap] = None,
         fleet_sizes: Optional[Mapping[str, int]] = None,
         default_num_jeeps: Optional[int] = None,
     ) -> None:
@@ -104,7 +105,7 @@ class Simulation:
         self.routes = list(routes or [])
         self.default_num_jeeps = int(default_num_jeeps or config.default_num_jeeps)
         self.fleet_sizes = dict(fleet_sizes or {})
-        self.passenger_map = PassengerMap()
+        self.passenger_map = passenger_map or PassengerMap()
 
         self._nearest_node_cache: dict[tuple[str, float, float], Optional[str]] = {}
         self._path_cache: dict[tuple[str, str], list[str]] = {}
