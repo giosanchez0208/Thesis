@@ -30,6 +30,7 @@ class SystemicFitnessResult:
     std_passenger_gtc_std: float
     average_reward: float
     std_reward: float
+    reward: float
     n_tests: int
     per_test_gtc: list[float]
     per_test_passenger_gtc_std: list[float]
@@ -68,6 +69,7 @@ class SystemicFitnessEvaluator:
         min_noise_routes: int = 1,
         max_noise_routes: int = 3,
         batch_size: int | None = None,
+        std_penalty_weight: float = 1.0,
         max_workers: int | None = None,
         seed: int | None = None,
     ) -> None:
@@ -90,6 +92,7 @@ class SystemicFitnessEvaluator:
         self.min_noise_routes = max(int(min_noise_routes), 0)
         self.max_noise_routes = max(int(max_noise_routes), self.min_noise_routes)
         self.batch_size = int(batch_size) if batch_size is not None else None
+        self.std_penalty_weight = float(std_penalty_weight)
         self.max_workers = max(int(max_workers), 1) if max_workers is not None else None
         self._seed = seed
         self._rng = np.random.default_rng(seed)
@@ -304,6 +307,7 @@ class SystemicFitnessEvaluator:
         )
         average_reward = float(np.mean(reward_values)) if reward_values else 0.0
         std_reward = float(np.std(reward_values, ddof=0)) if len(reward_values) > 1 else 0.0
+        reward = -float(average_gtc + self.std_penalty_weight * std_gtc)
 
         result = SystemicFitnessResult(
             average_gtc=average_gtc,
@@ -312,6 +316,7 @@ class SystemicFitnessEvaluator:
             std_passenger_gtc_std=std_passenger_gtc_std,
             average_reward=average_reward,
             std_reward=std_reward,
+            reward=reward,
             n_tests=int(resolved_n_tests),
             per_test_gtc=gtc_values,
             per_test_passenger_gtc_std=passenger_gtc_std_values,

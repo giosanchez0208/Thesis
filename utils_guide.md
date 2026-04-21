@@ -237,7 +237,7 @@ What it does:
 - exposes coordinate-invariant geometric observations
 - applies a continuous turn penalty during route construction
 - supports route closure as an episode-ending event
-- calls `calculate_route_fitness` on loop closure to score the final physical route on the 3-layer evaluation graph
+- calls `calculate_route_fitness` by default on loop closure, or a provided `SystemicFitnessEvaluator` during PPO training, to score the final physical route on the 3-layer evaluation graph
 
 State design:
 
@@ -247,6 +247,29 @@ State design:
 - no absolute node IDs in the observation
 
 The 3-layer travel graph remains evaluation-only for generalized travel cost scoring.
+
+## `utils/rl_training.py`
+
+This module contains the PPO training helpers used by B4.
+
+### `train_route_agent`
+
+What it does:
+
+- builds a PPO-ready `JeepneyRouteEnv` with a systemic reward evaluator
+- runs `stable_baselines3.PPO` on the coordinate-invariant observation space
+- tracks the best and worst completed routes during training
+- exports separate HTML maps and coordinate JSON for those routes
+- writes `training_history.csv` and `training_snapshots.csv` into the chosen results folder so route quality can be plotted across episodes
+
+Use this when you want the notebook to stay thin and keep the PPO plumbing in one utility layer.
+
+### `export_training_results_csvs`
+
+Use this helper when you want the training trail in tabular form without rerunning PPO.
+
+- `training_history.csv` stores each finished episode with return, reward, GTC, and route-length fields
+- `training_snapshots.csv` stores the best and worst closed-loop routes with their saved artifact paths
 
 ## `utils/passenger_generation/passenger.py`
 

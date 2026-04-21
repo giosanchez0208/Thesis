@@ -554,6 +554,8 @@ class JeepneyRouteEnv(gym.Env):
         place_queries: list[str] | None = None,
         point_query: str | None = None,
         point_dist: float = 30_000.0,
+        systemic_evaluator: Any | None = None,
+        systemic_std_penalty_weight: float = 1.0,
         seed: int | None = None,
         max_steps: int = 128,
         min_route_nodes: int = 4,
@@ -591,6 +593,8 @@ class JeepneyRouteEnv(gym.Env):
             self.drive_graph_proj = drive_graph_proj
 
         self.passenger_map = passenger_map or PassengerMap()
+        self.systemic_evaluator = systemic_evaluator
+        self.systemic_std_penalty_weight = float(systemic_std_penalty_weight)
         self.node_table = node_table_from_graph(self.drive_graph_raw, self.drive_graph_proj)
         self.node_table["base_node_id"] = self.node_table["base_node_id"].astype(int)
         self.node_table["node_key"] = self.node_table["base_node_id"].astype(int)
@@ -1008,11 +1012,16 @@ class JeepneyRouteEnv(gym.Env):
         self.current_candidates = candidates
 
     def _evaluate_closed_route(self) -> RouteFitnessResult:
-        return calculate_route_fitness(
+        if self.systemic_evaluator is None:
+            return calculate_route_fitness(
+                list(self.path_node_ids),
+                passenger_map=self.passenger_map,
+                drive_graph_raw=self.drive_graph_raw,
+                drive_graph_proj=self.drive_graph_proj,
+                seed=int(self.np_random.integers(0, 2**32 - 1)),
+            )
+        return self.systemic_evaluator.evaluate(
             list(self.path_node_ids),
-            passenger_map=self.passenger_map,
-            drive_graph_raw=self.drive_graph_raw,
-            drive_graph_proj=self.drive_graph_proj,
             seed=int(self.np_random.integers(0, 2**32 - 1)),
         )
 
@@ -1120,6 +1129,7 @@ class JeepneyRouteEnv(gym.Env):
             info["route_fitness"] = fitness
             info["fitness_reward"] = float(fitness.reward)
             info["fitness_average_gtc"] = float(fitness.average_gtc)
+            info["route_path_node_ids"] = list(self.path_node_ids)
             info["terminated_reason"] = "closed_loop"
         return reward, terminated, info
 
@@ -1158,6 +1168,7 @@ class JeepneyRouteEnv(gym.Env):
                 info["route_fitness"] = fitness
                 info["fitness_reward"] = float(fitness.reward)
                 info["fitness_average_gtc"] = float(fitness.average_gtc)
+                info["route_path_node_ids"] = list(self.path_node_ids)
             observation = self._observation()
             return observation, float(reward), terminated, truncated, info
 
@@ -1176,6 +1187,7 @@ class JeepneyRouteEnv(gym.Env):
                 "route_area_m2": self._current_polygon_area_m2(),
                 "state_vector": self._flat_state(observation),
                 "terminated_reason": "invalid_action",
+                "route_path_node_ids": list(self.path_node_ids),
             }
             return observation, float(reward), terminated, truncated, info
 
@@ -1195,6 +1207,7 @@ class JeepneyRouteEnv(gym.Env):
 
         observation = self._observation()
         info["state_vector"] = self._flat_state(observation)
+        info["route_path_node_ids"] = list(self.path_node_ids)
         return observation, float(reward), terminated, truncated, info
 
     def close(self) -> None:  # pragma: no cover - trivial lifecycle hook
