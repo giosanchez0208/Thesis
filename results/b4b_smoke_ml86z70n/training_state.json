@@ -1,0 +1,11 @@
+{
+  "checkpoint_path": "C:\\Users\\lifei\\OneDrive\\Desktop\\Thesis\\Thesis Repository\\Thesis\\results\\B4A_jeepney_rl\\ppo_training\\ppo_latest_model.zip",
+  "num_timesteps": 4039,
+  "episode_index": 1990,
+  "closed_loop_count": 1990,
+  "forced_loop_count": 1989,
+  "latest_episode_return": -41.77015265970658,
+  "latest_closure_mode": "forced",
+  "latest_terminated_reason": "closed_loop",
+  "latest_route_node_count": 3
+}

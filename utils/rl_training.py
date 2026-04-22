@@ -21,6 +21,11 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from .jeepney_route_env import JeepneyRouteEnv
 from .systemic_fitness_evaluator import SystemicFitnessEvaluator
 
+try:  # pragma: no cover - notebook detection
+    from IPython import get_ipython
+except ImportError:  # pragma: no cover - optional dependency
+    get_ipython = None
+
 try:  # pragma: no cover - optional dashboard dependency
     from rich.console import Console, Group
     from rich.live import Live
@@ -60,6 +65,41 @@ class RouteTrainingArtifacts:
     history_csv: Path | None = None
     telemetry_csv: Path | None = None
     snapshot_csv: Path | None = None
+
+
+class TelemetryPPO(PPO):
+    """PPO variant that retains the latest training telemetry after each update."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.latest_ppo_metrics: dict[str, float] = {}
+        self.latest_ppo_update_step = 0
+
+    def train(self) -> None:
+        super().train()
+        logger_values = getattr(getattr(self, "logger", None), "name_to_value", None)
+        if not isinstance(logger_values, dict):
+            return
+        telemetry: dict[str, float] = {}
+        for key in (
+            "rollout/ep_rew_mean",
+            "rollout/ep_len_mean",
+            "train/policy_gradient_loss",
+            "train/value_loss",
+            "train/entropy_loss",
+            "train/approx_kl",
+            "train/clip_fraction",
+            "train/explained_variance",
+            "train/loss",
+            "train/learning_rate",
+            "time/fps",
+        ):
+            value = _safe_float(logger_values.get(key))
+            if value is not None:
+                telemetry[key] = value
+        if telemetry:
+            self.latest_ppo_metrics = telemetry
+            self.latest_ppo_update_step = int(self.num_timesteps)
 
 
 def _serialise_route_nodes(route_node_ids: Iterable[int]) -> str:
@@ -478,7 +518,11 @@ class BestWorstRouteCallback(BaseCallback):
         self._dashboard_enabled = bool(
             enable_rich_dashboard and Console is not None and Live is not None and Panel is not None and Table is not None
         )
-        self._console = Console() if self._dashboard_enabled and Console is not None else None
+        self._in_notebook = False
+        if get_ipython is not None:
+            shell = get_ipython()
+            self._in_notebook = shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell"
+        self._console = Console(force_jupyter=self._in_notebook) if self._dashboard_enabled and Console is not None else None
         self._live = None
         self.history_csv = self.output_dir / "training_history.csv"
         self.telemetry_csv = self.output_dir / "training_telemetry.csv"
@@ -497,16 +541,40 @@ class BestWorstRouteCallback(BaseCallback):
         self._maybe_checkpoint(force=True)
 
     def _refresh_ppo_metrics(self) -> None:
-        logger = getattr(self.model, "logger", None)
-        logger_values = getattr(logger, "name_to_value", None) if logger is not None else None
-        if not isinstance(logger_values, dict):
-            return
+        latest_metrics = getattr(self.model, "latest_ppo_metrics", None)
+        if isinstance(latest_metrics, dict) and latest_metrics:
+            source = latest_metrics
+        else:
+            logger = getattr(self.model, "logger", None)
+            logger_values = getattr(logger, "name_to_value", None) if logger is not None else None
+            source = logger_values if isinstance(logger_values, dict) else {}
+
         for key in self._tracked_ppo_keys:
-            value = _safe_float(logger_values.get(key))
+            value = _safe_float(source.get(key))
             if value is None:
                 continue
             self._latest_ppo_metrics[key] = value
             self._ppo_metric_history.setdefault(key, deque(maxlen=20)).append(value)
+
+        if "rollout/ep_rew_mean" not in self._latest_ppo_metrics:
+            episode_returns = self._history_series("episode_return")
+            fallback = _rolling_mean(episode_returns, window=10)
+            if fallback is not None:
+                self._latest_ppo_metrics["rollout/ep_rew_mean"] = fallback
+                self._ppo_metric_history.setdefault("rollout/ep_rew_mean", deque(maxlen=20)).append(fallback)
+
+        if "rollout/ep_len_mean" not in self._latest_ppo_metrics:
+            episode_lengths = [max(int(record.get("route_node_count", 0)) - 1, 0) for record in self.history]
+            fallback = _rolling_mean(episode_lengths, window=10)
+            if fallback is not None:
+                self._latest_ppo_metrics["rollout/ep_len_mean"] = fallback
+                self._ppo_metric_history.setdefault("rollout/ep_len_mean", deque(maxlen=20)).append(fallback)
+
+        if "time/fps" not in self._latest_ppo_metrics and self._run_start_time:
+            elapsed = max(time.monotonic() - self._run_start_time, 1e-9)
+            fps = float(self.num_timesteps / elapsed)
+            self._latest_ppo_metrics["time/fps"] = fps
+            self._ppo_metric_history.setdefault("time/fps", deque(maxlen=20)).append(fps)
 
     def _restore_telemetry_state(self) -> None:
         if not self.telemetry:
@@ -1046,11 +1114,11 @@ def train_route_agent(
     latest_checkpoint = output_dir / "ppo_latest_model.zip"
     final_model_path = output_dir / "ppo_final_model.zip"
 
-    model: PPO
+    model: TelemetryPPO
     if resume_from_checkpoint and latest_checkpoint.exists():
-        model = PPO.load(str(latest_checkpoint), env=training_env, device="auto")
+        model = TelemetryPPO.load(str(latest_checkpoint), env=training_env, device="auto")
     else:
-        model = PPO(
+        model = TelemetryPPO(
             "MultiInputPolicy",
             training_env,
             seed=seed,
@@ -1063,7 +1131,7 @@ def train_route_agent(
         initial_history = []
         initial_best_snapshot = None
         initial_worst_snapshot = None
-        model = PPO(
+        model = TelemetryPPO(
             "MultiInputPolicy",
             training_env,
             seed=seed,
