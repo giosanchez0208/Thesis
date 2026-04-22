@@ -260,6 +260,7 @@ What it does:
 - runs `stable_baselines3.PPO` on the coordinate-invariant observation space
 - tracks the best and worst completed routes during training
 - exports separate HTML maps and coordinate JSON for those routes
+- mirrors route snapshots, best/worst route exports, and the CSV training trail into `route_snapshots/`
 - writes `training_history.csv`, `training_telemetry.csv`, and `training_snapshots.csv` into the chosen results folder so route quality and PPO learning telemetry can be plotted across episodes
 - resumes from `ppo_latest_model.zip` when present so rerunning the notebook continues the same training trail
 
@@ -272,6 +273,7 @@ Use this helper when you want the training trail in tabular form without rerunni
 - `training_history.csv` stores each finished episode with return, reward, GTC, and route-length fields
 - `training_telemetry.csv` stores heartbeat and episode snapshots with the latest PPO metrics, rolling status, and trend-friendly training fields
 - `training_snapshots.csv` stores the best and worst closed-loop routes with their saved artifact paths
+- `route_snapshots/` stores per-episode HTML/JSON route snapshots plus mirrored CSV summaries for training review
 
 ## `utils/route_spectrum_analysis.py`
 

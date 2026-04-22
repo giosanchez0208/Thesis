@@ -88,6 +88,10 @@ passenger_generation:
 # ============================
 # Used in generate_random_ride_loop() for synthetic route creation
 # 20 routes will be generated with seeds 0-19 for reproducibility
+route_cfg:
+  min_nodes: 100
+  max_nodes: null
+
 route_generation:
   min_nodes: 40
   max_nodes: 160  # Allows diverse route lengths

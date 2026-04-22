@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections import deque
 from collections.abc import Iterable
@@ -65,6 +66,7 @@ class RouteTrainingArtifacts:
     history_csv: Path | None = None
     telemetry_csv: Path | None = None
     snapshot_csv: Path | None = None
+    snapshot_dir: Path | None = None
 
 
 class TelemetryPPO(PPO):
@@ -527,6 +529,8 @@ class BestWorstRouteCallback(BaseCallback):
         self.history_csv = self.output_dir / "training_history.csv"
         self.telemetry_csv = self.output_dir / "training_telemetry.csv"
         self.snapshot_csv = self.output_dir / "training_snapshots.csv"
+        self.snapshot_dir = self.output_dir / "route_snapshots"
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self._restore_telemetry_state()
 
     def _init_callback(self) -> None:
@@ -863,8 +867,8 @@ class BestWorstRouteCallback(BaseCallback):
         std_gtc = float(getattr(fitness, "std_gtc", 0.0))
         fitness_reward = float(getattr(fitness, "reward", info.get("fitness_reward", episode_return)))
         route_latlon = route_nodes_to_latlon(route_node_ids, self.drive_graph_raw)
-        html_path = self.output_dir / "route_snapshot.html"
-        json_path = self.output_dir / "route_snapshot.json"
+        html_path = self.snapshot_dir / f"episode_{episode_index:06d}_route_snapshot.html"
+        json_path = self.snapshot_dir / f"episode_{episode_index:06d}_route_snapshot.json"
         payload = {
             "episode_index": episode_index,
             "episode_return": episode_return,
@@ -873,8 +877,21 @@ class BestWorstRouteCallback(BaseCallback):
             "std_gtc": std_gtc,
             "route_path_node_ids": route_node_ids,
             "route_latlon": route_latlon,
+            "route_system": {
+                "closed_loop": bool(info.get("terminated_reason") == "closed_loop"),
+                "closure_mode": info.get("closure_mode"),
+                "terminated_reason": info.get("terminated_reason"),
+                "route_node_count": len(route_node_ids),
+            },
         }
         json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        export_physical_route_html(
+            route_node_ids,
+            self.drive_graph_raw,
+            html_path,
+            title="Training Route Snapshot",
+            subtitle=f"episode {episode_index} | return {episode_return:.3f}",
+        )
         return RouteTrainingSnapshot(
             episode_index=episode_index,
             episode_return=episode_return,
@@ -980,6 +997,28 @@ class BestWorstRouteCallback(BaseCallback):
                     ),
                     encoding="utf-8",
                 )
+                export_physical_route_html(
+                    snapshot.route_path_node_ids,
+                    self.drive_graph_raw,
+                    self.snapshot_dir / f"episode_{snapshot.episode_index:06d}_best_route.html",
+                    title="Best Route Snapshot",
+                    subtitle=f"episode {snapshot.episode_index} | return {snapshot.episode_return:.3f}",
+                )
+                (self.snapshot_dir / f"episode_{snapshot.episode_index:06d}_best_route.json").write_text(
+                    json.dumps(
+                        {
+                            "episode_index": snapshot.episode_index,
+                            "episode_return": snapshot.episode_return,
+                            "fitness_reward": snapshot.fitness_reward,
+                            "average_gtc": snapshot.average_gtc,
+                            "std_gtc": snapshot.std_gtc,
+                            "route_path_node_ids": snapshot.route_path_node_ids,
+                            "route_latlon": snapshot.route_latlon,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
             if self.worst_snapshot is None or snapshot.episode_return < self.worst_snapshot.episode_return:
                 self.worst_snapshot = snapshot
                 self._latest_event_message = f"worst route updated at episode {snapshot.episode_index}"
@@ -992,6 +1031,28 @@ class BestWorstRouteCallback(BaseCallback):
                 )
                 self.worst_snapshot.output_json = self.output_dir / "worst_route.json"
                 self.worst_snapshot.output_json.write_text(
+                    json.dumps(
+                        {
+                            "episode_index": snapshot.episode_index,
+                            "episode_return": snapshot.episode_return,
+                            "fitness_reward": snapshot.fitness_reward,
+                            "average_gtc": snapshot.average_gtc,
+                            "std_gtc": snapshot.std_gtc,
+                            "route_path_node_ids": snapshot.route_path_node_ids,
+                            "route_latlon": snapshot.route_latlon,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                export_physical_route_html(
+                    snapshot.route_path_node_ids,
+                    self.drive_graph_raw,
+                    self.snapshot_dir / f"episode_{snapshot.episode_index:06d}_worst_route.html",
+                    title="Worst Route Snapshot",
+                    subtitle=f"episode {snapshot.episode_index} | return {snapshot.episode_return:.3f}",
+                )
+                (self.snapshot_dir / f"episode_{snapshot.episode_index:06d}_worst_route.json").write_text(
                     json.dumps(
                         {
                             "episode_index": snapshot.episode_index,
@@ -1175,6 +1236,11 @@ def train_route_agent(
         best_snapshot=callback.best_snapshot,
         worst_snapshot=callback.worst_snapshot,
     )
+    if callback.snapshot_dir is not None:
+        callback.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(history_csv, callback.snapshot_dir / history_csv.name)
+        shutil.copy2(telemetry_csv, callback.snapshot_dir / telemetry_csv.name)
+        shutil.copy2(snapshot_csv, callback.snapshot_dir / snapshot_csv.name)
     model.save(str(final_model_path))
     return RouteTrainingArtifacts(
         model=model,
@@ -1184,4 +1250,5 @@ def train_route_agent(
         history_csv=history_csv,
         telemetry_csv=telemetry_csv,
         snapshot_csv=snapshot_csv,
+        snapshot_dir=callback.snapshot_dir,
     )

@@ -48,6 +48,7 @@ class SimulationConfig:
         weights = data["weights"][weight_profile]
         velocities = data["velocities"]
         network = data.get("network", {})
+        route_cfg = data.get("route_cfg", data.get("route_generation", {}))
         route_generation = data.get("route_generation", {})
         simulation = data.get("simulation", {})
         passenger_generation = data.get("passenger_generation", {})
@@ -70,6 +71,7 @@ class SimulationConfig:
             max_interlayer_snap_distance_m=float(network.get("max_interlayer_snap_distance_m", 80.0)),
             raw={
                 "network": network,
+                "route_cfg": route_cfg,
                 "route_generation": route_generation,
                 "simulation": simulation,
                 "passenger_generation": passenger_generation,

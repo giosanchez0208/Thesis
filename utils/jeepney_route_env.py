@@ -343,6 +343,22 @@ def _default_simulation_config(
     )
 
 
+@lru_cache(maxsize=8)
+def _default_route_constraints(config_path: str | _Path | None = None) -> tuple[int, int | None]:
+    config = _default_simulation_config(config_path)
+    raw = getattr(config, "raw", {}) or {}
+    route_cfg = raw.get("route_cfg")
+    if not isinstance(route_cfg, dict):
+        route_cfg = raw.get("route_generation") or {}
+    min_nodes = max(int(route_cfg.get("min_nodes", 6)), 2)
+    max_value = route_cfg.get("max_nodes", None)
+    if max_value is None:
+        max_nodes = None
+    else:
+        max_nodes = max(int(max_value), min_nodes)
+    return min_nodes, max_nodes
+
+
 def _graph_path_key(path_value: str | _Path | None, default_path: _Path) -> str:
     return str(_Path(path_value)) if path_value is not None else str(default_path)
 
@@ -586,7 +602,8 @@ class JeepneyRouteEnv(gym.Env):
         systemic_std_penalty_weight: float = 1.0,
         seed: int | None = None,
         max_steps: int = 128,
-        min_route_nodes: int = 4,
+        min_route_nodes: int | None = None,
+        max_route_nodes: int | None = None,
         max_candidates: int | None = None,
         turn_penalty_weight: float = 1.0,
         repeat_uturn_penalty: float = 1.5,
@@ -658,8 +675,21 @@ class JeepneyRouteEnv(gym.Env):
         if not self._start_nodes:
             raise ValueError("The drive graph has no navigable outgoing edges.")
 
+        route_min_nodes, route_max_nodes = _default_route_constraints()
+        if min_route_nodes is None:
+            self.min_route_nodes = route_min_nodes
+        else:
+            self.min_route_nodes = max(int(min_route_nodes), route_min_nodes)
+        self.min_route_nodes = max(self.min_route_nodes, 2)
+
+        if max_route_nodes is None:
+            self.max_route_nodes = route_max_nodes
+        else:
+            self.max_route_nodes = max(int(max_route_nodes), self.min_route_nodes)
+        if self.max_route_nodes is not None:
+            self.max_route_nodes = max(self.max_route_nodes, self.min_route_nodes)
+
         self.max_steps = max(int(max_steps), 1)
-        self.min_route_nodes = max(int(min_route_nodes), 2)
         self.turn_penalty_weight = float(turn_penalty_weight)
         self.repeat_uturn_penalty = float(repeat_uturn_penalty)
         self.length_penalty_weight = float(length_penalty_weight)
@@ -767,7 +797,23 @@ class JeepneyRouteEnv(gym.Env):
         return float(np.clip(self._node_demand(node_id) / self._demand_scale, 0.0, 1.0))
 
     def _candidate_demand_values(self) -> list[float]:
-        return [self._node_demand(cand.next_node_id) for cand in self.current_candidates]
+        return [self._node_demand(cand.next_node_id) for cand in self._legal_candidates()]
+
+    def _legal_candidates(self) -> list[_CandidateEdge]:
+        if self.current_node_id is None:
+            return []
+        candidates = list(self.current_candidates[: self.max_candidates])
+        if not candidates:
+            return []
+
+        legal_candidates: list[_CandidateEdge] = []
+        for cand in candidates:
+            if self.previous_node_id is not None and cand.next_node_id == self.previous_node_id:
+                continue
+            if cand.next_node_id == self.origin_node_id and len(self.path_node_ids) < self.min_route_nodes:
+                continue
+            legal_candidates.append(cand)
+        return legal_candidates
 
     def _shape_features(self) -> np.ndarray:
         distance, bearing = self._distance_and_bearing_to_origin()
@@ -820,10 +866,11 @@ class JeepneyRouteEnv(gym.Env):
         current = int(self.current_node_id)
         current_out = self._out_degree_by_node.get(current, 0)
         current_in = self._in_degree_by_node.get(current, 0)
-        candidate_count = len(self.current_candidates)
-        next_outs = [self._out_degree_by_node.get(cand.next_node_id, 0) for cand in self.current_candidates]
+        legal_candidates = self._legal_candidates()
+        candidate_count = len(legal_candidates)
+        next_outs = [self._out_degree_by_node.get(cand.next_node_id, 0) for cand in legal_candidates]
         mean_candidate_out = float(np.mean(next_outs)) if next_outs else 0.0
-        dead_end_flag = 1.0 if current_out <= 1 else 0.0
+        dead_end_flag = 1.0 if candidate_count == 0 else 0.0
         return np.asarray(
             [
                 float(np.clip(current_out / max(self._max_out_degree, 1), 0.0, 1.0)),
@@ -937,9 +984,10 @@ class JeepneyRouteEnv(gym.Env):
                 (self.max_candidates + 1,), dtype=np.float32
             )
 
+        legal_candidates = self._legal_candidates()
         rows: list[list[float]] = []
         current_demand = self._node_demand(current)
-        for cand in self.current_candidates[: self.max_candidates]:
+        for cand in legal_candidates:
             angle = self._signed_angle(ref, cand.vector_xy)
             cand_dir = self._normalize_vector(cand.vector_xy)
             if origin is not None:
@@ -975,7 +1023,7 @@ class JeepneyRouteEnv(gym.Env):
             rows.extend([[0.0] * 10 for _ in range(pad_rows)])
 
         mask = np.zeros((self.max_candidates + 1,), dtype=np.float32)
-        mask[: len(self.current_candidates[: self.max_candidates])] = 1.0
+        mask[: len(legal_candidates)] = 1.0
         mask[self.max_candidates] = 1.0 if len(self.path_node_ids) >= self.min_route_nodes else 0.0
         return np.asarray(rows, dtype=np.float32), mask
 
@@ -1088,6 +1136,46 @@ class JeepneyRouteEnv(gym.Env):
         else:
             reward -= float(penalty)
         return reward, fitness, closed_nodes
+
+    def _step_info(
+        self,
+        *,
+        terminated_reason: str,
+        closure_mode: str | None = None,
+        base_info: dict[str, Any] | None = None,
+        route_fitness: RouteFitnessResult | None = None,
+        route_path_node_ids: Sequence[int] | None = None,
+        fitness_reward: float | None = None,
+        fitness_average_gtc: float | None = None,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        observation = self._observation()
+        info: dict[str, Any] = dict(base_info or {})
+        info.update(
+            {
+                "route_length_m": self.cumulative_length_m,
+                "sinuosity_index": self._route_sinuosity(),
+                "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
+                "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
+                "route_area_m2": self._current_polygon_area_m2(),
+                "state_vector": self._flat_state(observation),
+                "terminated_reason": terminated_reason,
+            }
+        )
+        if closure_mode is not None:
+            info["closure_mode"] = closure_mode
+        if route_fitness is not None:
+            info["route_fitness"] = route_fitness
+            info["fitness_reward"] = float(route_fitness.reward)
+            info["fitness_average_gtc"] = float(route_fitness.average_gtc)
+            info["fitness_passenger_gtc_std"] = float(route_fitness.passenger_gtc_std)
+        elif fitness_reward is not None:
+            info["fitness_reward"] = float(fitness_reward)
+        if fitness_average_gtc is not None:
+            info["fitness_average_gtc"] = float(fitness_average_gtc)
+        if route_path_node_ids is None:
+            route_path_node_ids = list(self.path_node_ids)
+        info["route_path_node_ids"] = list(route_path_node_ids)
+        return observation, info
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if seed is not None:
@@ -1206,54 +1294,49 @@ class JeepneyRouteEnv(gym.Env):
             raise RuntimeError("Call reset() before step().")
 
         action = int(action)
-        valid_moves = self.current_candidates[: self.max_candidates]
+        valid_moves = self._legal_candidates()
         terminate_action = self.max_candidates
         reward = 0.0
         terminated = False
         truncated = False
         info: dict[str, Any] = {}
+        terminate_allowed = len(self.path_node_ids) >= self.min_route_nodes
+
+        if not valid_moves and not terminate_allowed:
+            self.steps_taken += 1
+            reward = -self.dead_end_penalty
+            observation, info = self._step_info(
+                terminated_reason="dead_end",
+                closure_mode="blocked",
+                base_info=info if info else None,
+                route_path_node_ids=list(self.path_node_ids),
+            )
+            info["dead_end"] = True
+            return observation, float(reward), True, False, info
 
         if action == terminate_action:
-            if len(self.path_node_ids) < self.min_route_nodes:
+            if not terminate_allowed:
                 self.steps_taken += 1
                 reward = -self.invalid_action_penalty
                 if self.steps_taken >= self.max_steps:
-                    reward, fitness, closed_nodes = self._finalize_closed_route(
-                        natural=False,
-                        penalty=self.termination_penalty,
-                    )
+                    reward -= self.termination_penalty
                     terminated = True
-                    observation = self._observation()
-                    info = {
-                        "turn_angle_rad": 0.0,
-                        "turn_penalty": 0.0,
-                        "route_length_m": self.cumulative_length_m,
-                        "sinuosity_index": self._route_sinuosity(),
-                        "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
-                        "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
-                        "route_area_m2": self._current_polygon_area_m2(),
-                        "state_vector": self._flat_state(observation),
-                        "terminated_reason": "closed_loop",
-                        "closure_mode": "forced",
-                        "route_fitness": fitness,
-                        "fitness_reward": float(fitness.reward),
-                        "fitness_average_gtc": float(fitness.average_gtc),
-                        "route_path_node_ids": list(closed_nodes),
-                    }
+                    observation, info = self._step_info(
+                        terminated_reason="max_steps",
+                        closure_mode="forced",
+                        base_info=info if info else None,
+                        route_path_node_ids=list(self.path_node_ids),
+                    )
+                    info["invalid_action"] = True
+                    info["max_steps_reached"] = True
                     return observation, float(reward), terminated, False, info
-                observation = self._observation()
-                info = {
-                    "turn_angle_rad": 0.0,
-                    "turn_penalty": 0.0,
-                    "route_length_m": self.cumulative_length_m,
-                    "sinuosity_index": self._route_sinuosity(),
-                    "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
-                    "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
-                    "route_area_m2": self._current_polygon_area_m2(),
-                    "state_vector": self._flat_state(observation),
-                    "terminated_reason": "closure_blocked",
-                    "closure_mode": "blocked",
-                }
+                observation, info = self._step_info(
+                    terminated_reason="invalid_action",
+                    closure_mode="blocked",
+                    base_info=info if info else None,
+                    route_path_node_ids=list(self.path_node_ids),
+                )
+                info["invalid_action"] = True
                 return observation, float(reward), False, False, info
 
             closed = self.current_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes
@@ -1262,91 +1345,103 @@ class JeepneyRouteEnv(gym.Env):
                 natural=closed,
                 penalty=self.termination_penalty,
             )
-            info = {
-                "turn_angle_rad": 0.0,
-                "turn_penalty": 0.0,
-                "route_length_m": self.cumulative_length_m,
-                "sinuosity_index": self._route_sinuosity(),
-                "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
-                "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
-                "route_area_m2": self._current_polygon_area_m2(),
-                "state_vector": self._flat_state(self._observation()),
-                "terminated_reason": "closed_loop",
-                "closure_mode": "natural" if closed else "forced",
-            }
-            info["route_fitness"] = fitness
-            info["fitness_reward"] = float(fitness.reward)
-            info["fitness_average_gtc"] = float(fitness.average_gtc)
-            info["route_path_node_ids"] = list(closed_nodes)
-            observation = self._observation()
+            observation, info = self._step_info(
+                terminated_reason="closed_loop",
+                closure_mode="natural" if closed else "forced",
+                base_info=info,
+                route_fitness=fitness,
+                route_path_node_ids=closed_nodes,
+            )
             return observation, float(reward), terminated, truncated, info
 
         if action < 0 or action >= len(valid_moves):
             reward = -self.invalid_action_penalty
             self.steps_taken += 1
-            truncated = self.steps_taken >= self.max_steps
-            reward, fitness, closed_nodes = self._finalize_closed_route(
-                natural=False,
-                penalty=self.invalid_action_penalty,
+            if self.steps_taken >= self.max_steps:
+                reward -= self.termination_penalty
+                terminated = True
+                observation, info = self._step_info(
+                    terminated_reason="max_steps",
+                    closure_mode="forced",
+                    base_info=info if info else None,
+                    route_path_node_ids=list(self.path_node_ids),
+                )
+                info["invalid_action"] = True
+                info["max_steps_reached"] = True
+                return observation, float(reward), terminated, False, info
+            observation, info = self._step_info(
+                terminated_reason="invalid_action",
+                closure_mode="blocked",
+                base_info=info if info else None,
+                route_path_node_ids=list(self.path_node_ids),
             )
-            terminated = True
-            truncated = False
-            observation = self._observation()
-            info = {
-                "turn_angle_rad": 0.0,
-                "turn_penalty": 0.0,
-                "route_length_m": self.cumulative_length_m,
-                "sinuosity_index": self._route_sinuosity(),
-                "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
-                "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
-                "route_area_m2": self._current_polygon_area_m2(),
-                "state_vector": self._flat_state(observation),
-                "terminated_reason": "closed_loop",
-                "closure_mode": "forced",
-                "route_fitness": fitness,
-                "fitness_reward": float(fitness.reward),
-                "fitness_average_gtc": float(fitness.average_gtc),
-                "route_path_node_ids": list(closed_nodes),
-            }
-            return observation, float(reward), terminated, truncated, info
+            info["invalid_action"] = True
+            return observation, float(reward), False, False, info
 
         chosen = valid_moves[action]
         reward, terminated, info = self._apply_move(chosen.next_node_id)
 
-        if len(self.current_candidates) == 0 and not terminated:
-            terminated = True
-            reward, fitness, closed_nodes = self._finalize_closed_route(
-                natural=False,
-                penalty=self.dead_end_penalty,
-            )
-            info["route_fitness"] = fitness
-            info["fitness_reward"] = float(fitness.reward)
-            info["fitness_average_gtc"] = float(fitness.average_gtc)
-            info["route_path_node_ids"] = list(closed_nodes)
-            info["closure_mode"] = "forced"
+        if terminated:
             info["terminated_reason"] = "closed_loop"
-        elif terminated:
-            info["terminated_reason"] = "closed_loop"
+        else:
+            legal_after_move = self._legal_candidates()
+            if not legal_after_move and len(self.path_node_ids) < self.min_route_nodes:
+                terminated = True
+                reward -= self.dead_end_penalty
+                observation, info = self._step_info(
+                    terminated_reason="dead_end",
+                    closure_mode="blocked",
+                    base_info=info,
+                    route_path_node_ids=list(self.path_node_ids),
+                )
+                info["dead_end"] = True
 
-        truncated = self.steps_taken >= self.max_steps and not terminated
-        if truncated:
-            reward, fitness, closed_nodes = self._finalize_closed_route(
-                natural=False,
-                penalty=self.termination_penalty,
-            )
-            terminated = True
-            info["route_fitness"] = fitness
-            info["fitness_reward"] = float(fitness.reward)
-            info["fitness_average_gtc"] = float(fitness.average_gtc)
-            info["route_path_node_ids"] = list(closed_nodes)
-            info["closure_mode"] = "forced"
-            info["terminated_reason"] = "closed_loop"
-            truncated = False
+            elif self.max_route_nodes is not None and len(self.path_node_ids) >= self.max_route_nodes and not terminated:
+                terminated = True
+                reward -= self.termination_penalty
+                observation, info = self._step_info(
+                    terminated_reason="max_nodes",
+                    closure_mode="forced",
+                    base_info=info,
+                    route_path_node_ids=list(self.path_node_ids),
+                )
+                info["max_nodes_reached"] = True
+                info["route_path_node_ids"] = list(self.path_node_ids)
+                return observation, float(reward), terminated, False, info
 
-        observation = self._observation()
-        info["state_vector"] = self._flat_state(observation)
-        info.setdefault("route_path_node_ids", list(self.path_node_ids))
-        return observation, float(reward), terminated, truncated, info
+        if not terminated and self.steps_taken >= self.max_steps:
+            terminated = True
+            reward -= self.termination_penalty
+            observation, info = self._step_info(
+                terminated_reason="max_steps",
+                closure_mode="forced",
+                base_info=info,
+                route_path_node_ids=list(self.path_node_ids),
+            )
+            info["max_steps_reached"] = True
+            return observation, float(reward), terminated, False, info
+
+        if not terminated:
+            observation, info = self._step_info(
+                terminated_reason=info.get("terminated_reason", "in_progress"),
+                closure_mode=info.get("closure_mode"),
+                base_info=info,
+                route_fitness=info.get("route_fitness"),
+                route_path_node_ids=info.get("route_path_node_ids", list(self.path_node_ids)),
+                fitness_reward=info.get("fitness_reward"),
+                fitness_average_gtc=info.get("fitness_average_gtc"),
+            )
+        else:
+            observation, info = self._step_info(
+                terminated_reason=info.get("terminated_reason", "closed_loop"),
+                closure_mode=info.get("closure_mode"),
+                base_info=info,
+                route_fitness=info.get("route_fitness"),
+                route_path_node_ids=info.get("route_path_node_ids", list(self.path_node_ids)),
+                fitness_reward=info.get("fitness_reward"),
+                fitness_average_gtc=info.get("fitness_average_gtc"),
+            )
+        return observation, float(reward), terminated, False, info
 
     def close(self) -> None:  # pragma: no cover - trivial lifecycle hook
         return None
