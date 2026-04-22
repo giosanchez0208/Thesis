@@ -222,6 +222,35 @@ def load_graphs_for_study_area(
     return _load_graphs_for_study_area_cached(place_queries_key, point_query, float(point_dist), bool(simplify), bool(retain_all))
 
 
+def prune_dead_end_nodes(
+    G_raw: nx.MultiDiGraph,
+    G_proj: nx.MultiDiGraph | None = None,
+    *,
+    minimum_degree: int = 2,
+) -> tuple[nx.MultiDiGraph, nx.MultiDiGraph | None]:
+    """Recursively prune physical dead-end nodes from a drive graph.
+
+    The graph is converted to an undirected view for 2-core pruning, then the
+    surviving base nodes are used to slice the original raw and projected graphs.
+    """
+
+    if minimum_degree < 1:
+        raise ValueError("minimum_degree must be at least 1.")
+    if G_raw.number_of_nodes() == 0:
+        return G_raw.copy(), G_proj.copy() if G_proj is not None else None
+
+    undirected = nx.Graph(G_raw)
+    undirected.remove_edges_from(nx.selfloop_edges(undirected))
+    core = nx.k_core(undirected, k=int(minimum_degree))
+    core_nodes = set(core.nodes())
+    if not core_nodes:
+        raise ValueError("Dead-end pruning removed every node from the physical graph.")
+
+    pruned_raw = G_raw.subgraph(core_nodes).copy()
+    pruned_proj = G_proj.subgraph(core_nodes).copy() if G_proj is not None else None
+    return pruned_raw, pruned_proj
+
+
 def node_table_from_graph(G_raw: nx.MultiDiGraph, G_proj: nx.MultiDiGraph) -> pd.DataFrame:
     """Extract node tables from raw and projected graphs."""
     raw_nodes = pd.DataFrame.from_dict(dict(G_raw.nodes(data=True)), orient="index").reset_index()

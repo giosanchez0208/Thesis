@@ -21,6 +21,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from .jeepney_route_env import JeepneyRouteEnv
 from .systemic_fitness_evaluator import SystemicFitnessEvaluator
+from .travel_graph import prune_dead_end_nodes
 
 try:  # pragma: no cover - notebook detection
     from IPython import get_ipython
@@ -517,13 +518,17 @@ class BestWorstRouteCallback(BaseCallback):
         )
         self._ppo_metric_history: dict[str, deque[float]] = {key: deque(maxlen=20) for key in self._tracked_ppo_keys}
         self._latest_ppo_metrics: dict[str, float] = {}
-        self._dashboard_enabled = bool(
-            enable_rich_dashboard and Console is not None and Live is not None and Panel is not None and Table is not None
-        )
         self._in_notebook = False
         if get_ipython is not None:
             shell = get_ipython()
             self._in_notebook = shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell"
+        self._dashboard_enabled = bool(
+            enable_rich_dashboard
+            and Console is not None
+            and Live is not None
+            and Panel is not None
+            and Table is not None
+        )
         self._console = Console(force_jupyter=self._in_notebook) if self._dashboard_enabled and Console is not None else None
         self._live = None
         self.history_csv = self.output_dir / "training_history.csv"
@@ -789,8 +794,16 @@ class BestWorstRouteCallback(BaseCallback):
     def _start_live_dashboard(self) -> None:
         if not self._dashboard_enabled or self._live is not None or self._console is None or Live is None:
             return
-        self._live = Live(self._dashboard_panel(), console=self._console, refresh_per_second=4, transient=False)
+        self._live = Live(
+            self._dashboard_panel(),
+            console=self._console,
+            refresh_per_second=4,
+            transient=False,
+            redirect_stdout=not self._in_notebook,
+            redirect_stderr=not self._in_notebook,
+        )
         self._live.__enter__()
+        self._live.update(self._dashboard_panel(), refresh=True)
 
     def _stop_live_dashboard(self) -> None:
         if self._live is None:
@@ -864,7 +877,13 @@ class BestWorstRouteCallback(BaseCallback):
 
         fitness = info.get("route_fitness")
         average_gtc = float(getattr(fitness, "average_gtc", info.get("fitness_average_gtc", 0.0)))
-        std_gtc = float(getattr(fitness, "std_gtc", 0.0))
+        std_gtc = float(
+            getattr(
+                fitness,
+                "passenger_gtc_std",
+                getattr(fitness, "std_gtc", info.get("fitness_passenger_gtc_std", info.get("fitness_std_gtc", 0.0))),
+            )
+        )
         fitness_reward = float(getattr(fitness, "reward", info.get("fitness_reward", episode_return)))
         route_latlon = route_nodes_to_latlon(route_node_ids, self.drive_graph_raw)
         html_path = self.snapshot_dir / f"episode_{episode_index:06d}_route_snapshot.html"
@@ -932,7 +951,13 @@ class BestWorstRouteCallback(BaseCallback):
             self._latest_route_node_count = len(route_node_ids)
             self._latest_fitness_reward = float(getattr(fitness, "reward", info.get("fitness_reward", episode_return)))
             self._latest_average_gtc = float(getattr(fitness, "average_gtc", info.get("fitness_average_gtc", np.nan)))
-            self._latest_std_gtc = float(getattr(fitness, "passenger_gtc_std", info.get("fitness_passenger_gtc_std", np.nan)))
+            self._latest_std_gtc = float(
+                getattr(
+                    fitness,
+                    "passenger_gtc_std",
+                    getattr(fitness, "std_gtc", info.get("fitness_passenger_gtc_std", info.get("fitness_std_gtc", np.nan))),
+                )
+            )
             history_record: dict[str, Any] = {
                 "episode_index": self._episode_index,
                 "episode_return": episode_return,
@@ -941,7 +966,13 @@ class BestWorstRouteCallback(BaseCallback):
                 "closed_loop": closed_loop,
                 "fitness_reward": float(getattr(fitness, "reward", info.get("fitness_reward", episode_return))),
                 "average_gtc": float(getattr(fitness, "average_gtc", info.get("fitness_average_gtc", np.nan))),
-                "std_gtc": float(getattr(fitness, "passenger_gtc_std", info.get("fitness_passenger_gtc_std", np.nan))),
+                "std_gtc": float(
+                    getattr(
+                        fitness,
+                        "passenger_gtc_std",
+                        getattr(fitness, "std_gtc", info.get("fitness_passenger_gtc_std", info.get("fitness_std_gtc", np.nan))),
+                    )
+                ),
                 "route_node_count": len(route_node_ids),
             }
             if route_node_ids:
@@ -1094,10 +1125,14 @@ def build_training_env(
     seed: int | None = None,
     **env_kwargs: Any,
 ) -> JeepneyRouteEnv:
+    pruned_drive_graph_raw, pruned_drive_graph_proj = prune_dead_end_nodes(
+        drive_graph_raw,
+        drive_graph_proj,
+    )
     evaluator = SystemicFitnessEvaluator(
         passenger_map=passenger_map,
-        drive_graph_raw=drive_graph_raw,
-        drive_graph_proj=drive_graph_proj,
+        drive_graph_raw=pruned_drive_graph_raw,
+        drive_graph_proj=pruned_drive_graph_proj,
         evaluation_test_mean=systemic_test_mean,
         evaluation_test_std=systemic_test_std,
         background_route_mean=background_route_mean,
@@ -1108,8 +1143,8 @@ def build_training_env(
         seed=seed,
     )
     return JeepneyRouteEnv(
-        drive_graph_raw=drive_graph_raw,
-        drive_graph_proj=drive_graph_proj,
+        drive_graph_raw=pruned_drive_graph_raw,
+        drive_graph_proj=pruned_drive_graph_proj,
         passenger_map=passenger_map,
         systemic_evaluator=evaluator,
         systemic_std_penalty_weight=systemic_std_penalty_weight,

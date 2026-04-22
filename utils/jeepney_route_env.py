@@ -609,10 +609,11 @@ class JeepneyRouteEnv(gym.Env):
         repeat_uturn_penalty: float = 1.5,
         length_penalty_weight: float = 0.01,
         revisit_penalty_weight: float = 0.5,
-        dead_end_penalty: float = 2.0,
-        invalid_action_penalty: float = 1.0,
+        survival_bonus: float = 0.25,
+        dead_end_penalty: float = 10_000.0,
+        invalid_action_penalty: float = 5_000.0,
         closure_bonus: float = 5.0,
-        termination_penalty: float = 4.0,
+        termination_penalty: float = 10_000.0,
     ) -> None:
         super().__init__()
         self._seed = seed
@@ -694,6 +695,7 @@ class JeepneyRouteEnv(gym.Env):
         self.repeat_uturn_penalty = float(repeat_uturn_penalty)
         self.length_penalty_weight = float(length_penalty_weight)
         self.revisit_penalty_weight = float(revisit_penalty_weight)
+        self.survival_bonus = float(survival_bonus)
         self.dead_end_penalty = float(dead_end_penalty)
         self.invalid_action_penalty = float(invalid_action_penalty)
         self.closure_bonus = float(closure_bonus)
@@ -799,21 +801,41 @@ class JeepneyRouteEnv(gym.Env):
     def _candidate_demand_values(self) -> list[float]:
         return [self._node_demand(cand.next_node_id) for cand in self._legal_candidates()]
 
+    def _legal_candidates_for_state(
+        self,
+        *,
+        current_node_id: int,
+        previous_node_id: int | None,
+        route_length: int,
+    ) -> list[_CandidateEdge]:
+        candidates = list(self._successors.get(int(current_node_id), []))
+        legal_candidates: list[_CandidateEdge] = []
+        for cand in candidates:
+            if previous_node_id is not None and cand.next_node_id == previous_node_id:
+                continue
+            if cand.next_node_id == self.origin_node_id and route_length < self.min_route_nodes:
+                continue
+            legal_candidates.append(cand)
+        return legal_candidates
+
+    def _candidate_has_future(self, candidate: _CandidateEdge) -> bool:
+        next_route_length = len(self.path_node_ids) + 1
+        next_candidates = self._legal_candidates_for_state(
+            current_node_id=candidate.next_node_id,
+            previous_node_id=self.current_node_id,
+            route_length=next_route_length,
+        )
+        if next_candidates:
+            return True
+        return next_route_length >= self.min_route_nodes
+
     def _legal_candidates(self) -> list[_CandidateEdge]:
         if self.current_node_id is None:
             return []
         candidates = list(self.current_candidates[: self.max_candidates])
         if not candidates:
             return []
-
-        legal_candidates: list[_CandidateEdge] = []
-        for cand in candidates:
-            if self.previous_node_id is not None and cand.next_node_id == self.previous_node_id:
-                continue
-            if cand.next_node_id == self.origin_node_id and len(self.path_node_ids) < self.min_route_nodes:
-                continue
-            legal_candidates.append(cand)
-        return legal_candidates
+        return [cand for cand in candidates if self._candidate_has_future(cand)]
 
     def _shape_features(self) -> np.ndarray:
         distance, bearing = self._distance_and_bearing_to_origin()
@@ -1167,7 +1189,9 @@ class JeepneyRouteEnv(gym.Env):
             info["route_fitness"] = route_fitness
             info["fitness_reward"] = float(route_fitness.reward)
             info["fitness_average_gtc"] = float(route_fitness.average_gtc)
-            info["fitness_passenger_gtc_std"] = float(route_fitness.passenger_gtc_std)
+            info["fitness_passenger_gtc_std"] = float(
+                getattr(route_fitness, "passenger_gtc_std", getattr(route_fitness, "std_gtc", np.nan))
+            )
         elif fitness_reward is not None:
             info["fitness_reward"] = float(fitness_reward)
         if fitness_average_gtc is not None:
@@ -1245,9 +1269,8 @@ class JeepneyRouteEnv(gym.Env):
             self.consecutive_uturns = 0
             self._steps_since_sharp_turn = 0
 
-        revisit_penalty = self.revisit_penalty_weight if next_node_id in self.visited_node_ids else 0.0
-        length_penalty = self.length_penalty_weight * (length_m / self._distance_scale)
-        reward = -(turn_penalty + revisit_penalty + length_penalty)
+        reward = self.survival_bonus
+        step_reward = reward
 
         self.previous_node_id = current
         self.current_node_id = next_node_id
@@ -1269,10 +1292,14 @@ class JeepneyRouteEnv(gym.Env):
                 natural=natural,
                 penalty=self.termination_penalty,
             )
+            reward += step_reward
+        else:
+            reward = step_reward
 
         info = {
             "turn_angle_rad": turn_angle,
             "turn_penalty": turn_penalty,
+            "step_survival_bonus": step_reward,
             "route_length_m": self.cumulative_length_m,
             "sinuosity_index": self._route_sinuosity(),
             "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
