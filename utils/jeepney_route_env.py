@@ -77,6 +77,8 @@ _DEFAULT_UNSERVED_PENALTY_BETA = 2.0
 
 __all__ = ["RouteFitnessResult", "calculate_route_fitness", "JeepneyRouteEnv"]
 
+_PHYSICAL_TO_RIDE_NODE_MAP_CACHE: dict[tuple[int, int, str], dict[int, str]] = {}
+
 
 @dataclass(slots=True)
 class RouteFitnessResult:
@@ -174,6 +176,26 @@ def _physical_path_to_route_nodes(
     if all(drive_graph_raw.has_edge(u, v) for u, v in zip(physical_nodes[:-1], physical_nodes[1:])):
         return physical_nodes
     return _stitch_physical_loop(physical_nodes, drive_graph_raw)
+
+
+def _repair_minimal_closed_loop(
+    node_ids: Sequence[int],
+    drive_graph_raw: nx.MultiDiGraph,
+) -> list[int]:
+    anchor_candidates = [int(node_id) for node_id in node_ids if node_id is not None]
+    if not anchor_candidates:
+        raise ValueError("generated_path needs at least one physical node.")
+
+    anchor = int(anchor_candidates[0])
+    outgoing = list(drive_graph_raw.out_edges(anchor, data=True))
+    if not outgoing:
+        raise ValueError(f"Route anchor {anchor!r} has no outgoing edges to build a closed loop.")
+
+    next_node = min(
+        outgoing,
+        key=lambda edge: float(edge[2].get("length", 0.0)),
+    )[1]
+    return [anchor, int(next_node), anchor]
 
 
 def _build_physical_to_ride_node_map(
@@ -471,8 +493,14 @@ def calculate_route_fitness(
             point_dist=30_000.0,
         )
 
-    physical_to_ride_node_map = _build_physical_to_ride_node_map(drive_graph_raw, drive_graph_proj, nodes_df)
+    map_cache_key = (id(drive_graph_raw), id(drive_graph_proj), nodes_cache_key)
+    physical_to_ride_node_map = _PHYSICAL_TO_RIDE_NODE_MAP_CACHE.get(map_cache_key)
+    if physical_to_ride_node_map is None:
+        physical_to_ride_node_map = _build_physical_to_ride_node_map(drive_graph_raw, drive_graph_proj, nodes_df)
+        _PHYSICAL_TO_RIDE_NODE_MAP_CACHE[map_cache_key] = physical_to_ride_node_map
     route_nodes = _physical_path_to_route_nodes(generated_path, drive_graph_raw)
+    if len(route_nodes) < 2 or len(set(route_nodes)) < 2:
+        route_nodes = _repair_minimal_closed_loop(route_nodes, drive_graph_raw)
     route = _physical_nodes_to_ride_route(
         route_nodes,
         route_id=route_id,
@@ -948,7 +976,7 @@ class JeepneyRouteEnv(gym.Env):
 
         mask = np.zeros((self.max_candidates + 1,), dtype=np.float32)
         mask[: len(self.current_candidates[: self.max_candidates])] = 1.0
-        mask[self.max_candidates] = 1.0
+        mask[self.max_candidates] = 1.0 if len(self.path_node_ids) >= self.min_route_nodes else 0.0
         return np.asarray(rows, dtype=np.float32), mask
 
     def _global_features(self) -> np.ndarray:
@@ -1011,17 +1039,25 @@ class JeepneyRouteEnv(gym.Env):
         candidates.sort(key=lambda cand: self._signed_angle(ref, cand.vector_xy))
         self.current_candidates = candidates
 
+    def _minimal_closed_route_path(self) -> list[int]:
+        anchor_node_id = self.origin_node_id if self.origin_node_id is not None else self.current_node_id
+        if anchor_node_id is None:
+            return list(self.path_node_ids)
+
+        candidates = self.current_candidates or list(self._successors.get(int(anchor_node_id), []))
+        if not candidates:
+            return [int(anchor_node_id)]
+
+        best = min(candidates, key=lambda cand: cand.length_m)
+        return [int(anchor_node_id), int(best.next_node_id), int(anchor_node_id)]
+
     def _closed_route_path_nodes(self) -> list[int]:
         if len(self.path_node_ids) < 2:
-            if self.current_node_id is None:
-                return list(self.path_node_ids)
-            node_id = int(self.current_node_id)
-            candidates = self.current_candidates or list(self._successors.get(node_id, []))
-            if candidates:
-                best = min(candidates, key=lambda cand: cand.length_m)
-                return [node_id, int(best.next_node_id), node_id]
-            return [node_id, node_id]
-        return _stitch_physical_loop(self.path_node_ids, self.drive_graph_raw)
+            return self._minimal_closed_route_path()
+        closed_nodes = _stitch_physical_loop(self.path_node_ids, self.drive_graph_raw)
+        if len(closed_nodes) < 2 or len(set(closed_nodes)) < 2:
+            return self._minimal_closed_route_path()
+        return closed_nodes
 
     def _evaluate_closed_route(self, route_node_ids: Sequence[int] | None = None) -> RouteFitnessResult:
         closed_nodes = list(self.path_node_ids if route_node_ids is None else route_node_ids)
@@ -1178,6 +1214,48 @@ class JeepneyRouteEnv(gym.Env):
         info: dict[str, Any] = {}
 
         if action == terminate_action:
+            if len(self.path_node_ids) < self.min_route_nodes:
+                self.steps_taken += 1
+                reward = -self.invalid_action_penalty
+                if self.steps_taken >= self.max_steps:
+                    reward, fitness, closed_nodes = self._finalize_closed_route(
+                        natural=False,
+                        penalty=self.termination_penalty,
+                    )
+                    terminated = True
+                    observation = self._observation()
+                    info = {
+                        "turn_angle_rad": 0.0,
+                        "turn_penalty": 0.0,
+                        "route_length_m": self.cumulative_length_m,
+                        "sinuosity_index": self._route_sinuosity(),
+                        "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
+                        "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
+                        "route_area_m2": self._current_polygon_area_m2(),
+                        "state_vector": self._flat_state(observation),
+                        "terminated_reason": "closed_loop",
+                        "closure_mode": "forced",
+                        "route_fitness": fitness,
+                        "fitness_reward": float(fitness.reward),
+                        "fitness_average_gtc": float(fitness.average_gtc),
+                        "route_path_node_ids": list(closed_nodes),
+                    }
+                    return observation, float(reward), terminated, False, info
+                observation = self._observation()
+                info = {
+                    "turn_angle_rad": 0.0,
+                    "turn_penalty": 0.0,
+                    "route_length_m": self.cumulative_length_m,
+                    "sinuosity_index": self._route_sinuosity(),
+                    "distance_to_origin_m": self._distance_and_bearing_to_origin()[0],
+                    "bearing_to_origin_rad": self._distance_and_bearing_to_origin()[1],
+                    "route_area_m2": self._current_polygon_area_m2(),
+                    "state_vector": self._flat_state(observation),
+                    "terminated_reason": "closure_blocked",
+                    "closure_mode": "blocked",
+                }
+                return observation, float(reward), False, False, info
+
             closed = self.current_node_id == self.origin_node_id and len(self.path_node_ids) >= self.min_route_nodes
             terminated = True
             reward, fitness, closed_nodes = self._finalize_closed_route(
