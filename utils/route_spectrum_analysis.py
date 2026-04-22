@@ -302,7 +302,7 @@ def summarize_route_spectrum(frame: pd.DataFrame, *, label: str) -> str:
     return "\n".join(lines)
 
 
-def build_route_notes(
+def build_route_nodes(
     routes: Sequence[Any],
     frame: pd.DataFrame,
     *,

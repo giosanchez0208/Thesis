@@ -23,7 +23,7 @@ from .rl_training import (
     train_route_agent,
 )
 from .route_spectrum_analysis import (
-    build_route_notes,
+    build_route_nodes,
     build_route_spectrum_frame,
     compare_route_spectrum_frames,
     plot_correlation_delta,
@@ -94,7 +94,7 @@ __all__ = [
     "export_training_results_csvs",
     "route_nodes_to_latlon",
     "train_route_agent",
-    "build_route_notes",
+    "build_route_nodes",
     "build_route_spectrum_frame",
     "compare_route_spectrum_frames",
     "plot_correlation_delta",

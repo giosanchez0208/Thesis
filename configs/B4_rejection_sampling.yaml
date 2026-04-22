@@ -1,0 +1,50 @@
+# B4 rejection sampling configuration
+# This file is rewritten by the B4 notebook when the sampler is run.
+
+experiment: B4_rejection_sampling
+score_mode: systemic_risk_adjusted_score
+higher_is_better: true
+sample_size: 5000
+random_seed: 20260422
+risk_aversion_k: 1.0
+robustness_cv_ceiling: 0.2
+
+route_generator:
+  min_area_m2: 2000000
+  anchor_pool_size: 96
+  max_attempts: 500
+  route_prefix: B4Q
+
+screening:
+  good_percentile: 95.0
+  elite_percentile: 99.0
+  tests: 1
+  background_route_mean: 1
+  background_route_std: 0
+  percentile_threshold: null
+  elite_threshold: null
+  mean_plus_2sigma_threshold: null
+  robustness_ceiling: 0.2
+
+validation:
+  tests: 10
+  background_route_mean: 2
+  background_route_std: 1
+
+summary:
+  mean_gtc: null
+  std_gtc: null
+  mean_risk_adjusted_score: null
+  std_risk_adjusted_score: null
+  good_route_count: null
+  elite_route_count: null
+  sigma_route_count: null
+  best_route_id: null
+  best_risk_adjusted_score: null
+  best_average_gtc: null
+  best_std_gtc: null
+  validation_mean_gtc: null
+  validation_std_gtc: null
+  validation_mean_risk_adjusted_score: null
+  validation_std_risk_adjusted_score: null
+  validation_best_route_id: null
