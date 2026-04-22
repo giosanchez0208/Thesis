@@ -1,0 +1,2 @@
+episode_index,episode_return,terminated_reason,closure_mode,closed_loop,fitness_reward,average_gtc,std_gtc,route_node_count,route_path_node_ids
+1,1.5,closed_loop,natural,True,-10.0,10.0,2.0,5,"[1, 2, 3, 1, 2]"

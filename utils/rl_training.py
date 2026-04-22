@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,12 +22,13 @@ from .jeepney_route_env import JeepneyRouteEnv
 from .systemic_fitness_evaluator import SystemicFitnessEvaluator
 
 try:  # pragma: no cover - optional dashboard dependency
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
 except ImportError:  # pragma: no cover - degrade gracefully without live UI
     Console = None
+    Group = None
     Live = None
     Panel = None
     Table = None
@@ -56,6 +58,7 @@ class RouteTrainingArtifacts:
     worst_snapshot: RouteTrainingSnapshot | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     history_csv: Path | None = None
+    telemetry_csv: Path | None = None
     snapshot_csv: Path | None = None
 
 
@@ -144,13 +147,109 @@ def _load_snapshot_from_json(snapshot_json: Path) -> RouteTrainingSnapshot | Non
     )
 
 
+def _load_training_telemetry(output_dir: str | Path) -> list[dict[str, Any]]:
+    out_dir = Path(output_dir).resolve()
+    telemetry_csv = out_dir / "training_telemetry.csv"
+    if not telemetry_csv.exists():
+        return []
+
+    frame = pd.read_csv(telemetry_csv)
+    telemetry: list[dict[str, Any]] = []
+    for row in frame.to_dict(orient="records"):
+        record = dict(row)
+        for key in (
+            "sequence_index",
+            "episode_index",
+            "timesteps",
+            "route_node_count",
+            "closed_loop_count",
+            "forced_loop_count",
+        ):
+            if key in record and pd.notna(record[key]):
+                record[key] = int(record[key])
+        for key in (
+            "episode_return",
+            "fitness_reward",
+            "average_gtc",
+            "std_gtc",
+            "latest_episode_return",
+            "latest_fitness_reward",
+            "latest_average_gtc",
+            "latest_std_gtc",
+            "best_return",
+            "closed_loop_rate",
+            "forced_loop_rate",
+            "elapsed_s",
+            "episode_duration_s",
+            "steps_per_second",
+        ):
+            if key in record and pd.notna(record[key]):
+                record[key] = float(record[key])
+        for key in (
+            "closed_loop",
+            "is_terminal",
+        ):
+            if key in record and pd.notna(record[key]):
+                record[key] = bool(record[key])
+        for key in ("terminated_reason", "closure_mode", "status_message", "event_type", "event_message"):
+            if key in record and pd.isna(record[key]):
+                record[key] = None
+        telemetry.append(record)
+    return telemetry
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return float(numeric)
+
+
+def _rolling_mean(values: Iterable[float], window: int = 10) -> float | None:
+    samples = [float(value) for value in values]
+    if not samples:
+        return None
+    if window > 0 and len(samples) > window:
+        samples = samples[-window:]
+    return float(np.mean(samples))
+
+
+def _format_signed_change(delta: float | None, *, higher_is_better: bool) -> str:
+    if delta is None:
+        return "n/a"
+    if abs(delta) < 1e-9:
+        return "→ flat"
+    improving = delta > 0 if higher_is_better else delta < 0
+    arrow = "↑" if delta > 0 else "↓"
+    label = "better" if improving else "worse"
+    return f"{arrow} {abs(delta):.3g} ({label})"
+
+
+def _series_trend(values: Iterable[float], *, higher_is_better: bool, window: int = 10) -> tuple[float | None, float | None, str]:
+    samples = [float(value) for value in values]
+    if not samples:
+        return None, None, "n/a"
+    recent = samples[-window:] if window > 0 and len(samples) > window else samples
+    prior = samples[-2 * window : -window] if window > 0 and len(samples) > window else []
+    recent_mean = float(np.mean(recent))
+    prior_mean = float(np.mean(prior)) if prior else None
+    delta = None if prior_mean is None else recent_mean - prior_mean
+    return recent_mean, prior_mean, _format_signed_change(delta, higher_is_better=higher_is_better)
+
+
 def export_training_results_csvs(
     *,
     output_dir: str | Path,
     history: list[dict[str, Any]],
+    telemetry: list[dict[str, Any]],
     best_snapshot: RouteTrainingSnapshot | None,
     worst_snapshot: RouteTrainingSnapshot | None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     out_dir = Path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,6 +280,53 @@ def export_training_results_csvs(
     history_csv = out_dir / "training_history.csv"
     pd.DataFrame(history_rows, columns=history_columns).to_csv(history_csv, index=False)
 
+    telemetry_rows: list[dict[str, Any]] = []
+    for record in telemetry:
+        row = dict(record)
+        telemetry_rows.append(row)
+
+    telemetry_columns = [
+        "sequence_index",
+        "event_type",
+        "timesteps",
+        "wall_time_s",
+        "episode_index",
+        "episode_return",
+        "closed_loop",
+        "closure_mode",
+        "terminated_reason",
+        "route_node_count",
+        "fitness_reward",
+        "average_gtc",
+        "std_gtc",
+        "latest_episode_return",
+        "latest_fitness_reward",
+        "latest_average_gtc",
+        "latest_std_gtc",
+        "best_return",
+        "closed_loop_count",
+        "forced_loop_count",
+        "closed_loop_rate",
+        "forced_loop_rate",
+        "episode_duration_s",
+        "steps_per_second",
+        "status_message",
+        "event_message",
+        "rollout/ep_rew_mean",
+        "rollout/ep_len_mean",
+        "train/policy_gradient_loss",
+        "train/value_loss",
+        "train/entropy_loss",
+        "train/approx_kl",
+        "train/clip_fraction",
+        "train/explained_variance",
+        "train/loss",
+        "train/learning_rate",
+        "time/fps",
+    ]
+    telemetry_csv = out_dir / "training_telemetry.csv"
+    pd.DataFrame(telemetry_rows, columns=telemetry_columns).to_csv(telemetry_csv, index=False)
+
     snapshot_rows: list[dict[str, Any]] = []
     if best_snapshot is not None:
         snapshot_rows.append(_snapshot_to_row("best", best_snapshot))
@@ -202,7 +348,7 @@ def export_training_results_csvs(
     ]
     pd.DataFrame(snapshot_rows, columns=snapshot_columns).to_csv(snapshot_csv, index=False)
 
-    return history_csv, snapshot_csv
+    return history_csv, telemetry_csv, snapshot_csv
 
 
 def route_nodes_to_latlon(route_node_ids: Iterable[int], drive_graph_raw) -> list[tuple[float, float]]:
@@ -271,8 +417,11 @@ class BestWorstRouteCallback(BaseCallback):
         checkpoint_steps: int = 2000,
         checkpoint_path: str | Path | None = None,
         initial_history: list[dict[str, Any]] | None = None,
+        initial_telemetry: list[dict[str, Any]] | None = None,
         initial_best_snapshot: RouteTrainingSnapshot | None = None,
         initial_worst_snapshot: RouteTrainingSnapshot | None = None,
+        target_timesteps: int | None = None,
+        status_message: str = "Training",
         enable_rich_dashboard: bool = True,
         verbose: int = 0,
     ) -> None:
@@ -289,7 +438,13 @@ class BestWorstRouteCallback(BaseCallback):
         self.best_snapshot = initial_best_snapshot
         self.worst_snapshot = initial_worst_snapshot
         self.history = [dict(record) for record in (initial_history or [])]
+        self.telemetry = [dict(record) for record in (initial_telemetry or [])]
+        self.target_timesteps = int(target_timesteps) if target_timesteps is not None else None
+        self.status_message = str(status_message)
         self._episode_returns: list[float] = []
+        self._episode_start_time = 0.0
+        self._run_start_time = 0.0
+        self._episode_durations: deque[float] = deque(maxlen=20)
         self._episode_index = max((int(record.get("episode_index", 0)) for record in self.history), default=0)
         self._closed_loop_count = sum(1 for record in self.history if bool(record.get("closed_loop")))
         self._forced_loop_count = sum(1 for record in self.history if record.get("closure_mode") == "forced")
@@ -301,16 +456,39 @@ class BestWorstRouteCallback(BaseCallback):
         self._latest_closure_mode = "unknown"
         self._latest_terminated_reason = "unknown"
         self._latest_route_node_count = 0
+        self._latest_fitness_reward = float("nan")
+        self._latest_average_gtc = float("nan")
+        self._latest_std_gtc = float("nan")
+        self._latest_event_message = "waiting for the first closed loop"
+        self._tracked_ppo_keys = (
+            "rollout/ep_rew_mean",
+            "rollout/ep_len_mean",
+            "train/policy_gradient_loss",
+            "train/value_loss",
+            "train/entropy_loss",
+            "train/approx_kl",
+            "train/clip_fraction",
+            "train/explained_variance",
+            "train/loss",
+            "train/learning_rate",
+            "time/fps",
+        )
+        self._ppo_metric_history: dict[str, deque[float]] = {key: deque(maxlen=20) for key in self._tracked_ppo_keys}
+        self._latest_ppo_metrics: dict[str, float] = {}
         self._dashboard_enabled = bool(
             enable_rich_dashboard and Console is not None and Live is not None and Panel is not None and Table is not None
         )
         self._console = Console() if self._dashboard_enabled and Console is not None else None
         self._live = None
         self.history_csv = self.output_dir / "training_history.csv"
+        self.telemetry_csv = self.output_dir / "training_telemetry.csv"
         self.snapshot_csv = self.output_dir / "training_snapshots.csv"
+        self._restore_telemetry_state()
 
     def _init_callback(self) -> None:
         self._episode_returns = [0.0 for _ in range(self.training_env.num_envs)]
+        self._run_start_time = time.monotonic()
+        self._episode_start_time = self._run_start_time
         self._last_heartbeat = time.monotonic()
         self._last_heartbeat_step = self.num_timesteps
         self._last_checkpoint = self._last_heartbeat
@@ -318,25 +496,223 @@ class BestWorstRouteCallback(BaseCallback):
         self._start_live_dashboard()
         self._maybe_checkpoint(force=True)
 
-    def _dashboard_panel(self):
-        if not self._dashboard_enabled or Panel is None or Table is None:
+    def _refresh_ppo_metrics(self) -> None:
+        logger = getattr(self.model, "logger", None)
+        logger_values = getattr(logger, "name_to_value", None) if logger is not None else None
+        if not isinstance(logger_values, dict):
+            return
+        for key in self._tracked_ppo_keys:
+            value = _safe_float(logger_values.get(key))
+            if value is None:
+                continue
+            self._latest_ppo_metrics[key] = value
+            self._ppo_metric_history.setdefault(key, deque(maxlen=20)).append(value)
+
+    def _restore_telemetry_state(self) -> None:
+        if not self.telemetry:
+            return
+        for record in self.telemetry:
+            for key in self._tracked_ppo_keys:
+                value = _safe_float(record.get(key))
+                if value is None:
+                    continue
+                self._latest_ppo_metrics[key] = value
+                self._ppo_metric_history.setdefault(key, deque(maxlen=20)).append(value)
+        last_record = self.telemetry[-1]
+        status_message = last_record.get("status_message")
+        if isinstance(status_message, str) and status_message.strip():
+            self.status_message = status_message.strip()
+        event_message = last_record.get("event_message")
+        if isinstance(event_message, str) and event_message.strip():
+            self._latest_event_message = event_message.strip()
+        latest_episode_return = _safe_float(last_record.get("latest_episode_return"))
+        if latest_episode_return is not None:
+            self._latest_episode_return = latest_episode_return
+        latest_fitness_reward = _safe_float(last_record.get("latest_fitness_reward"))
+        if latest_fitness_reward is not None:
+            self._latest_fitness_reward = latest_fitness_reward
+        latest_average_gtc = _safe_float(last_record.get("latest_average_gtc"))
+        if latest_average_gtc is not None:
+            self._latest_average_gtc = latest_average_gtc
+        latest_std_gtc = _safe_float(last_record.get("latest_std_gtc"))
+        if latest_std_gtc is not None:
+            self._latest_std_gtc = latest_std_gtc
+
+    def _history_series(self, key: str) -> list[float]:
+        values: list[float] = []
+        for record in self.history:
+            value = _safe_float(record.get(key))
+            if value is not None:
+                values.append(value)
+        return values
+
+    def _avg_route_node_count(self, window: int = 10) -> float | None:
+        values = self._history_series("route_node_count")
+        return _rolling_mean(values, window=window)
+
+    def _episode_duration_mean(self) -> float | None:
+        if not self._episode_durations:
+            return None
+        return float(np.mean(list(self._episode_durations)))
+
+    def _dashboard_tables(self):
+        if not self._dashboard_enabled or Table is None:
             return None
 
-        table = Table.grid(padding=(0, 1))
-        table.add_column(justify="right", style="bold cyan")
-        table.add_column(style="white")
-        best_return = self.best_snapshot.episode_return if self.best_snapshot is not None else float("nan")
-        table.add_row("timesteps", f"{self.num_timesteps}")
-        table.add_row("episodes", f"{self._episode_index}")
-        table.add_row("closed loops", f"{self._closed_loop_count}")
-        table.add_row("forced loops", f"{self._forced_loop_count}")
-        table.add_row("best return", f"{best_return:.3f}")
-        table.add_row("latest return", f"{self._latest_episode_return:.3f}")
-        table.add_row("closure mode", str(self._latest_closure_mode))
-        table.add_row("termination", str(self._latest_terminated_reason))
-        table.add_row("route nodes", f"{self._latest_route_node_count}")
-        table.add_row("checkpoint", str(self.checkpoint_path))
-        return Panel(table, title="B4B PPO training", border_style="cyan")
+        episode_returns = self._history_series("episode_return")
+        avg_gtc_values = self._history_series("average_gtc")
+        std_gtc_values = self._history_series("std_gtc")
+        route_counts = self._history_series("route_node_count")
+        closed_history = [1.0 if record.get("closed_loop") else 0.0 for record in self.history]
+        forced_history = [1.0 if record.get("closure_mode") == "forced" else 0.0 for record in self.history]
+
+        latest_return = self._latest_episode_return
+        latest_avg_gtc = self._latest_average_gtc
+        latest_std_gtc = self._latest_std_gtc
+        return_mean_10, return_prev_10, return_trend = _series_trend(episode_returns, higher_is_better=True, window=10)
+        gtc_mean_10, gtc_prev_10, gtc_trend = _series_trend(avg_gtc_values, higher_is_better=False, window=10)
+        std_mean_10, std_prev_10, std_trend = _series_trend(std_gtc_values, higher_is_better=False, window=10)
+
+        summary = Table(show_header=False, box=None, pad_edge=False)
+        summary.add_column("metric", style="bold cyan")
+        summary.add_column("value")
+        summary.add_row("status", self.status_message)
+        summary.add_row("event", self._latest_event_message)
+        summary.add_row("timesteps", f"{self.num_timesteps:,}")
+        if self.target_timesteps and self.target_timesteps > 0:
+            progress = 100.0 * min(self.num_timesteps / self.target_timesteps, 1.0)
+            summary.add_row("progress", f"{progress:.1f}%")
+        elapsed = max(time.monotonic() - self._run_start_time, 1e-9) if self._run_start_time else None
+        if elapsed is not None:
+            summary.add_row("elapsed", f"{elapsed/60.0:.1f} min")
+            summary.add_row("speed", f"{self.num_timesteps / elapsed:.1f} steps/s")
+            if self.target_timesteps and self.num_timesteps < self.target_timesteps:
+                remaining = max(self.target_timesteps - self.num_timesteps, 0)
+                rate = self.num_timesteps / elapsed if elapsed > 0 else 0.0
+                eta = remaining / rate if rate > 1e-9 else None
+                summary.add_row("eta", f"{eta/60.0:.1f} min" if eta is not None else "n/a")
+        summary.add_row("episodes", f"{len(self.history):,}")
+        summary.add_row("closed loops", f"{self._closed_loop_count:,}")
+        summary.add_row("forced loops", f"{self._forced_loop_count:,}")
+        summary.add_row("closed loop rate", f"{(self._closed_loop_count / max(len(self.history), 1)):.1%}")
+        summary.add_row("latest return", f"{latest_return:.3f}")
+        summary.add_row("best return", f"{self.best_snapshot.episode_return:.3f}" if self.best_snapshot is not None else "n/a")
+        summary.add_row("latest avg gtc", f"{latest_avg_gtc:.3f}")
+        summary.add_row("latest std gtc", f"{latest_std_gtc:.3f}")
+        summary.add_row("avg route nodes", f"{_rolling_mean(route_counts, window=10):.1f}" if route_counts else "n/a")
+        summary.add_row("checkpoint", self.checkpoint_path.name)
+
+        trends = Table(show_header=True, header_style="bold magenta", box=None, pad_edge=False)
+        trends.add_column("signal")
+        trends.add_column("rolling avg")
+        trends.add_column("trend vs prev 10")
+        trends.add_row(
+            "episode return",
+            f"{return_mean_10:.3f}" if return_mean_10 is not None else "n/a",
+            return_trend,
+        )
+        trends.add_row(
+            "average GTC",
+            f"{gtc_mean_10:.3f}" if gtc_mean_10 is not None else "n/a",
+            gtc_trend,
+        )
+        trends.add_row(
+            "GTC std",
+            f"{std_mean_10:.3f}" if std_mean_10 is not None else "n/a",
+            std_trend,
+        )
+        trends.add_row(
+            "closed loop rate",
+            f"{_rolling_mean(closed_history, window=10):.1%}" if closed_history else "n/a",
+            "n/a",
+        )
+        trends.add_row(
+            "forced loop rate",
+            f"{_rolling_mean(forced_history, window=10):.1%}" if forced_history else "n/a",
+            "n/a",
+        )
+
+        ppo = Table(show_header=True, header_style="bold green", box=None, pad_edge=False)
+        ppo.add_column("metric")
+        ppo.add_column("latest")
+        ppo.add_column("rolling avg")
+        ppo.add_column("trend")
+        ppo_rows = [
+            ("rollout/ep_rew_mean", True),
+            ("rollout/ep_len_mean", False),
+            ("train/policy_gradient_loss", False),
+            ("train/value_loss", False),
+            ("train/entropy_loss", False),
+            ("train/approx_kl", False),
+            ("train/clip_fraction", False),
+            ("train/explained_variance", True),
+            ("train/loss", False),
+            ("train/learning_rate", True),
+            ("time/fps", True),
+        ]
+        for key, higher_is_better in ppo_rows:
+            history = list(self._ppo_metric_history.get(key, []))
+            latest = self._latest_ppo_metrics.get(key)
+            recent_mean, _prior_mean, trend = _series_trend(history, higher_is_better=higher_is_better, window=5)
+            ppo.add_row(
+                key,
+                f"{latest:.4g}" if latest is not None else "n/a",
+                f"{recent_mean:.4g}" if recent_mean is not None else "n/a",
+                trend,
+            )
+
+        return Group(
+            Panel(summary, title="B4B training summary", border_style="cyan"),
+            Panel(trends, title="Episode trends", border_style="magenta"),
+            Panel(ppo, title="PPO telemetry", border_style="green"),
+        )
+
+    def _dashboard_panel(self):
+        if not self._dashboard_enabled or Panel is None or Table is None or Group is None:
+            return None
+        return self._dashboard_tables()
+
+    def _telemetry_record(self, event_type: str) -> dict[str, Any]:
+        now = time.monotonic()
+        elapsed_s = float(max(now - self._run_start_time, 0.0)) if self._run_start_time else 0.0
+        episode_duration_s = float(max(now - self._episode_start_time, 0.0)) if self._episode_start_time else 0.0
+        current_episode_return = float(self._episode_returns[0]) if self._episode_returns else float(self._latest_episode_return)
+        closed_loop_rate = float(self._closed_loop_count / max(len(self.history), 1))
+        forced_loop_rate = float(self._forced_loop_count / max(len(self.history), 1))
+        record: dict[str, Any] = {
+            "sequence_index": len(self.telemetry) + 1,
+            "event_type": str(event_type),
+            "timesteps": int(self.num_timesteps),
+            "wall_time_s": elapsed_s,
+            "episode_index": int(self._episode_index),
+            "episode_return": current_episode_return,
+            "closed_loop": bool(self._latest_terminated_reason == "closed_loop"),
+            "closure_mode": self._latest_closure_mode,
+            "terminated_reason": self._latest_terminated_reason,
+            "route_node_count": int(self._latest_route_node_count),
+            "fitness_reward": self._latest_fitness_reward,
+            "average_gtc": self._latest_average_gtc,
+            "std_gtc": self._latest_std_gtc,
+            "latest_episode_return": float(self._latest_episode_return),
+            "latest_fitness_reward": float(self._latest_fitness_reward),
+            "latest_average_gtc": float(self._latest_average_gtc),
+            "latest_std_gtc": float(self._latest_std_gtc),
+            "best_return": float(self.best_snapshot.episode_return if self.best_snapshot is not None else np.nan),
+            "closed_loop_count": int(self._closed_loop_count),
+            "forced_loop_count": int(self._forced_loop_count),
+            "closed_loop_rate": closed_loop_rate,
+            "forced_loop_rate": forced_loop_rate,
+            "episode_duration_s": episode_duration_s,
+            "steps_per_second": float(self.num_timesteps / elapsed_s) if elapsed_s > 1e-9 else np.nan,
+            "status_message": self.status_message,
+            "event_message": self._latest_event_message,
+        }
+        for key in self._tracked_ppo_keys:
+            record[key] = self._latest_ppo_metrics.get(key, np.nan)
+        return record
+
+    def _append_telemetry(self, event_type: str) -> None:
+        self.telemetry.append(self._telemetry_record(event_type))
 
     def _start_live_dashboard(self) -> None:
         if not self._dashboard_enabled or self._live is not None or self._console is None or Live is None:
@@ -354,9 +730,10 @@ class BestWorstRouteCallback(BaseCallback):
     def _persist_state(self) -> None:
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self.model.save(str(self.checkpoint_path))
-        self.history_csv, self.snapshot_csv = export_training_results_csvs(
+        self.history_csv, self.telemetry_csv, self.snapshot_csv = export_training_results_csvs(
             output_dir=self.output_dir,
             history=self.history,
+            telemetry=self.telemetry,
             best_snapshot=self.best_snapshot,
             worst_snapshot=self.worst_snapshot,
         )
@@ -396,18 +773,11 @@ class BestWorstRouteCallback(BaseCallback):
             return
         self._last_heartbeat = now
         self._last_heartbeat_step = self.num_timesteps
+        self._refresh_ppo_metrics()
+        self._append_telemetry("heartbeat")
         self._maybe_checkpoint()
         if self._live is not None:
             self._live.update(self._dashboard_panel())
-        best_return = self.best_snapshot.episode_return if self.best_snapshot is not None else float("nan")
-        print(
-            f"[training] timesteps={self.num_timesteps} "
-            f"episodes={self._episode_index} "
-            f"closed_loops={self._closed_loop_count} "
-            f"forced_loops={self._forced_loop_count} "
-            f"best_return={best_return:.3f}",
-            flush=True,
-        )
 
     def _capture_snapshot(
         self,
@@ -456,10 +826,14 @@ class BestWorstRouteCallback(BaseCallback):
 
         for index, (reward, done, info) in enumerate(zip(rewards, dones, infos)):
             self._episode_returns[index] += float(reward)
-            self._emit_heartbeat()
             if not done:
+                self._refresh_ppo_metrics()
+                self._emit_heartbeat()
                 continue
 
+            self._refresh_ppo_metrics()
+            episode_duration = time.monotonic() - self._episode_start_time
+            self._episode_durations.append(max(episode_duration, 0.0))
             episode_return = self._episode_returns[index]
             self._episode_returns[index] = 0.0
             self._episode_index += 1
@@ -471,6 +845,9 @@ class BestWorstRouteCallback(BaseCallback):
             self._latest_closure_mode = str(closure_mode) if closure_mode is not None else "unknown"
             self._latest_terminated_reason = str(info.get("terminated_reason") or "unknown")
             self._latest_route_node_count = len(route_node_ids)
+            self._latest_fitness_reward = float(getattr(fitness, "reward", info.get("fitness_reward", episode_return)))
+            self._latest_average_gtc = float(getattr(fitness, "average_gtc", info.get("fitness_average_gtc", np.nan)))
+            self._latest_std_gtc = float(getattr(fitness, "passenger_gtc_std", info.get("fitness_passenger_gtc_std", np.nan)))
             history_record: dict[str, Any] = {
                 "episode_index": self._episode_index,
                 "episode_return": episode_return,
@@ -485,21 +862,17 @@ class BestWorstRouteCallback(BaseCallback):
             if route_node_ids:
                 history_record["route_path_node_ids"] = route_node_ids
             self.history.append(history_record)
-            print(
-                f"[training] episode={self._episode_index} "
-                f"return={episode_return:.3f} "
-                f"closed_loop={closed_loop} "
-                f"closure_mode={closure_mode} "
-                f"nodes={len(route_node_ids)}",
-                flush=True,
-            )
             if closed_loop:
                 self._closed_loop_count += 1
             if closure_mode == "forced":
                 self._forced_loop_count += 1
+            self._episode_start_time = time.monotonic()
+            self._append_telemetry("episode")
 
             if not closed_loop:
-                self._emit_heartbeat()
+                self._maybe_checkpoint()
+                if self._live is not None:
+                    self._live.update(self._dashboard_panel())
                 continue
 
             snapshot = self._capture_snapshot(
@@ -508,11 +881,14 @@ class BestWorstRouteCallback(BaseCallback):
                 info=info,
             )
             if snapshot is None:
-                self._emit_heartbeat()
+                self._maybe_checkpoint()
+                if self._live is not None:
+                    self._live.update(self._dashboard_panel())
                 continue
 
             if self.best_snapshot is None or snapshot.episode_return > self.best_snapshot.episode_return:
                 self.best_snapshot = snapshot
+                self._latest_event_message = f"best route updated at episode {snapshot.episode_index}"
                 self.best_snapshot.output_html = export_physical_route_html(
                     snapshot.route_path_node_ids,
                     self.drive_graph_raw,
@@ -536,13 +912,9 @@ class BestWorstRouteCallback(BaseCallback):
                     ),
                     encoding="utf-8",
                 )
-                print(
-                    f"[training] best snapshot updated: episode={snapshot.episode_index} "
-                    f"return={snapshot.episode_return:.3f}",
-                    flush=True,
-                )
             if self.worst_snapshot is None or snapshot.episode_return < self.worst_snapshot.episode_return:
                 self.worst_snapshot = snapshot
+                self._latest_event_message = f"worst route updated at episode {snapshot.episode_index}"
                 self.worst_snapshot.output_html = export_physical_route_html(
                     snapshot.route_path_node_ids,
                     self.drive_graph_raw,
@@ -566,16 +938,14 @@ class BestWorstRouteCallback(BaseCallback):
                     ),
                     encoding="utf-8",
                 )
-                print(
-                    f"[training] worst snapshot updated: episode={snapshot.episode_index} "
-                    f"return={snapshot.episode_return:.3f}",
-                    flush=True,
-                )
-            self._emit_heartbeat()
+            self._maybe_checkpoint()
+            if self._live is not None:
+                self._live.update(self._dashboard_panel())
 
         return True
 
     def _on_training_end(self) -> None:
+        self.status_message = "training complete"
         self._persist_state()
         self._stop_live_dashboard()
 
@@ -670,6 +1040,7 @@ def train_route_agent(
     )
 
     initial_history = _load_training_history(output_dir) if resume_from_checkpoint else []
+    initial_telemetry = _load_training_telemetry(output_dir) if resume_from_checkpoint else []
     initial_best_snapshot = _load_snapshot_from_json(output_dir / "best_route.json") if resume_from_checkpoint else None
     initial_worst_snapshot = _load_snapshot_from_json(output_dir / "worst_route.json") if resume_from_checkpoint else None
     latest_checkpoint = output_dir / "ppo_latest_model.zip"
@@ -678,10 +1049,6 @@ def train_route_agent(
     model: PPO
     if resume_from_checkpoint and latest_checkpoint.exists():
         model = PPO.load(str(latest_checkpoint), env=training_env, device="auto")
-        print(f"[training] Resuming from checkpoint: {latest_checkpoint}", flush=True)
-    elif resume_from_checkpoint and final_model_path.exists():
-        model = PPO.load(str(final_model_path), env=training_env, device="auto")
-        print(f"[training] Resuming from final model: {final_model_path}", flush=True)
     else:
         model = PPO(
             "MultiInputPolicy",
@@ -690,17 +1057,26 @@ def train_route_agent(
             verbose=ppo_verbose,
             **ppo_kwargs,
         )
-        print("[training] Starting a fresh PPO model.", flush=True)
 
     current_timesteps = int(getattr(model, "num_timesteps", 0))
+    if resume_from_checkpoint and latest_checkpoint.exists() and current_timesteps >= int(total_timesteps):
+        initial_history = []
+        initial_best_snapshot = None
+        initial_worst_snapshot = None
+        model = PPO(
+            "MultiInputPolicy",
+            training_env,
+            seed=seed,
+            verbose=ppo_verbose,
+            **ppo_kwargs,
+        )
+        current_timesteps = 0
+
     remaining_timesteps = max(int(total_timesteps) - current_timesteps, 0)
     if current_timesteps > 0:
-        print(
-            f"[training] Loaded timesteps={current_timesteps}; target={int(total_timesteps)}; remaining={remaining_timesteps}.",
-            flush=True,
-        )
+        status_message = f"resuming from {current_timesteps:,} timesteps"
     else:
-        print(f"[training] Target timesteps={int(total_timesteps)}.", flush=True)
+        status_message = "starting a fresh PPO run"
 
     callback = BestWorstRouteCallback(
         drive_graph_raw=drive_graph_raw,
@@ -711,8 +1087,11 @@ def train_route_agent(
         checkpoint_steps=checkpoint_steps,
         checkpoint_path=latest_checkpoint,
         initial_history=initial_history,
+        initial_telemetry=initial_telemetry,
         initial_best_snapshot=initial_best_snapshot,
         initial_worst_snapshot=initial_worst_snapshot,
+        target_timesteps=int(total_timesteps),
+        status_message=status_message,
         enable_rich_dashboard=use_rich_dashboard,
     )
     if remaining_timesteps > 0:
@@ -721,11 +1100,10 @@ def train_route_agent(
             callback=callback,
             reset_num_timesteps=current_timesteps == 0,
         )
-    else:
-        print("[training] Target timesteps already reached; skipping additional PPO updates.", flush=True)
-    history_csv, snapshot_csv = export_training_results_csvs(
+    history_csv, telemetry_csv, snapshot_csv = export_training_results_csvs(
         output_dir=output_dir,
         history=callback.history,
+        telemetry=callback.telemetry,
         best_snapshot=callback.best_snapshot,
         worst_snapshot=callback.worst_snapshot,
     )
@@ -736,5 +1114,6 @@ def train_route_agent(
         worst_snapshot=callback.worst_snapshot,
         history=callback.history,
         history_csv=history_csv,
+        telemetry_csv=telemetry_csv,
         snapshot_csv=snapshot_csv,
     )
