@@ -1,50 +1,42 @@
-# B4 rejection sampling configuration
-# This file is rewritten by the B4 notebook when the sampler is run.
-
 experiment: B4_rejection_sampling
-score_mode: systemic_risk_adjusted_score
 higher_is_better: true
 sample_size: 5000
 random_seed: 20260422
 risk_aversion_k: 1.0
 robustness_cv_ceiling: 0.2
-
 route_generator:
   min_area_m2: 2000000
   anchor_pool_size: 96
   max_attempts: 500
   route_prefix: B4Q
-
 screening:
   good_percentile: 95.0
   elite_percentile: 99.0
   tests: 1
   background_route_mean: 1
   background_route_std: 0
-  percentile_threshold: null
-  elite_threshold: null
-  mean_plus_2sigma_threshold: null
+  percentile_threshold: -3720.032388103914
+  elite_threshold: -2930.641711780433
+  mean_plus_2sigma_threshold: -3104.4556514841893
   robustness_ceiling: 0.2
-
 validation:
   tests: 10
   background_route_mean: 2
   background_route_std: 1
-
 summary:
-  mean_gtc: null
-  std_gtc: null
-  mean_risk_adjusted_score: null
-  std_risk_adjusted_score: null
-  good_route_count: null
-  elite_route_count: null
-  sigma_route_count: null
-  best_route_id: null
-  best_risk_adjusted_score: null
-  best_average_gtc: null
-  best_std_gtc: null
-  validation_mean_gtc: null
-  validation_std_gtc: null
-  validation_mean_risk_adjusted_score: null
-  validation_std_risk_adjusted_score: null
-  validation_best_route_id: null
+  mean_gtc: 5838.4975502001
+  std_gtc: 0.0
+  mean_risk_adjusted_score: -5838.4975502001
+  std_risk_adjusted_score: 1367.0209493579553
+  good_route_count: 249
+  elite_route_count: 49
+  sigma_route_count: 74
+  best_route_id: B4Q01257
+  best_risk_adjusted_score: -0.0
+  best_average_gtc: 0.0
+  best_std_gtc: 0.0
+  validation_mean_gtc: 5784.986918978761
+  validation_std_gtc: 432.51921255435377
+  validation_mean_risk_adjusted_score: -7041.345488896358
+  validation_std_risk_adjusted_score: 605.2945220614098
+  validation_best_route_id: B4Q00856
