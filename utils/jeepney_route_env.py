@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from math import cos, hypot, pi, sin
 from pathlib import Path as _Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import networkx as nx
 import numpy as np
@@ -382,21 +382,51 @@ def _load_fitness_graph_frames(
 
 
 def _edge_weight_from_manager(manager: TravelGraphManager, edge_id: str) -> float:
+    edge_weight = getattr(manager, "get_edge_weight", None)
+    if callable(edge_weight):
+        value = edge_weight(edge_id)
+        if value is not None:
+            return float(value)
     edge = manager.get_edge(edge_id)
     if edge is None:
         raise KeyError(f"Edge not found in travel graph manager: {edge_id}")
-    edge_data = manager.graph.get_edge_data(edge.u, edge.v) or {}
-    return float(edge_data.get("weight", edge.dist))
+    return float(manager._edge_weight(edge.edge_type, float(edge.dist)))
+
+
+def _baseline_manager_factory(
+    *,
+    edges_csv: str | _Path | None,
+    nodes_csv: str | _Path | None,
+    background_jeep_routes: Sequence[Any],
+    edges_df: pd.DataFrame,
+    nodes_df: pd.DataFrame,
+    config: SimulationConfig,
+) -> Callable[[], TravelGraphManager]:
+    def _factory() -> TravelGraphManager:
+        return TravelGraphManager(
+            edges_csv or _DEFAULT_EDGES_CSV,
+            nodes_csv or _DEFAULT_NODES_CSV,
+            routes=background_jeep_routes or None,
+            edges_df=edges_df,
+            nodes_df=nodes_df,
+            quiet=True,
+            walk_wt=config.walk_wt,
+            ride_wt=config.ride_wt,
+            wait_wt=config.wait_wt,
+            transfer_wt=config.transfer_wt,
+        )
+
+    return _factory
 
 
 def _evaluate_passenger_batch(
     simulation: Simulation,
     passengers: Sequence[Passenger],
     *,
-    baseline_manager: TravelGraphManager,
+    baseline_manager: TravelGraphManager | None,
+    baseline_manager_factory: Callable[[], TravelGraphManager] | None,
     unserved_penalty_beta: float,
 ) -> RouteFitnessResult:
-    total_cost = 0.0
     served_count = 0
     unserved_count = 0
     passenger_costs: list[float] = []
@@ -420,6 +450,10 @@ def _evaluate_passenger_batch(
             remaining_travel_time = 0.0
             if start_graph_node_id is not None and end_graph_node_id is not None:
                 try:
+                    if baseline_manager is None:
+                        if baseline_manager_factory is None:
+                            raise RuntimeError("baseline_manager_factory was not provided.")
+                        baseline_manager = baseline_manager_factory()
                     fallback_edges = baseline_manager.calculate_shortest_path(
                         start_graph_node_id,
                         end_graph_node_id,
@@ -436,25 +470,23 @@ def _evaluate_passenger_batch(
                         )
                         * 111_000.0
                     )
-            passenger_cost = elapsed_time + (remaining_travel_time * float(unserved_penalty_beta))
-            total_cost += passenger_cost
-            passenger_costs.append(passenger_cost)
+            passenger_costs.append(elapsed_time + (remaining_travel_time * float(unserved_penalty_beta)))
             continue
 
         path_edges = list(passenger.shortest_path_edges)
         path_cost = sum(_edge_weight_from_manager(manager, edge_id) for edge_id in path_edges)
         served_count += 1
-        total_cost += path_cost
         passenger_costs.append(path_cost)
 
     passenger_count = len(passengers)
-    average_gtc = total_cost / passenger_count if passenger_count else 0.0
+    total_gtc = float(sum(passenger_costs))
+    average_gtc = total_gtc / passenger_count if passenger_count else 0.0
     passenger_gtc_std = float(np.std(passenger_costs, ddof=0)) if len(passenger_costs) > 1 else 0.0
     return RouteFitnessResult(
         reward=-float(average_gtc),
         average_gtc=float(average_gtc),
         passenger_gtc_std=passenger_gtc_std,
-        total_gtc=float(total_cost),
+        total_gtc=float(total_gtc),
         passenger_count=passenger_count,
         served_passenger_count=served_count,
         unserved_passenger_count=unserved_count,
@@ -541,17 +573,14 @@ def calculate_route_fitness(
         wait_wt=config.wait_wt,
         transfer_wt=config.transfer_wt,
     )
-    baseline_manager = TravelGraphManager(
-        edges_csv or _DEFAULT_EDGES_CSV,
-        nodes_csv or _DEFAULT_NODES_CSV,
-        routes=background_jeep_routes or None,
+    baseline_manager = None
+    baseline_manager_factory = _baseline_manager_factory(
+        edges_csv=edges_csv,
+        nodes_csv=nodes_csv,
+        background_jeep_routes=background_jeep_routes,
         edges_df=edges_df,
         nodes_df=nodes_df,
-        quiet=True,
-        walk_wt=config.walk_wt,
-        ride_wt=config.ride_wt,
-        wait_wt=config.wait_wt,
-        transfer_wt=config.transfer_wt,
+        config=config,
     )
     simulation = Simulation(
         manager,
@@ -568,6 +597,7 @@ def calculate_route_fitness(
         simulation,
         passengers,
         baseline_manager=baseline_manager,
+        baseline_manager_factory=baseline_manager_factory,
         unserved_penalty_beta=unserved_penalty_beta,
     )
     result.route_node_count = len(route.nodes)

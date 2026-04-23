@@ -24,6 +24,12 @@ import networkx as nx
 import osmnx as ox
 from shapely.geometry import LineString
 
+try:  # pragma: no cover - optional compiled acceleration
+    from .._route_speedups import nearest_node_id, shortest_path_edge_ids
+except Exception:  # pragma: no cover - fallback when extension is unavailable
+    nearest_node_id = None
+    shortest_path_edge_ids = None
+
 try:
     import geopandas as gpd
 except ImportError:
@@ -33,6 +39,12 @@ try:
     import folium
 except ImportError:
     folium = None
+
+
+_NODE_GEO_CACHE: dict[
+    tuple[int, int, tuple[str, ...]],
+    tuple[dict, dict[str, list[str]], dict[str, list[float]], dict[str, list[float]]],
+] = {}
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -84,6 +96,48 @@ def _find_local_graph_cache(place_queries: tuple[str, ...]) -> tuple[_Path, _Pat
                 return walk_path, drive_path
 
     return None
+
+
+def _cached_node_geo_structures(
+    nodes_df: pd.DataFrame | None,
+) -> tuple[dict, dict[str, list[str]], dict[str, list[float]], dict[str, list[float]]]:
+    if nodes_df is None:
+        return {}, {}, {}, {}
+
+    cache_key = (id(nodes_df), len(nodes_df), tuple(nodes_df.columns))
+    cached = _NODE_GEO_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    node_coords: dict = {}
+    nearest_ids_by_layer: dict[str, list[str]] = {}
+    nearest_lats_by_layer: dict[str, list[float]] = {}
+    nearest_lons_by_layer: dict[str, list[float]] = {}
+
+    required = {"node_id", "lat", "lon"}
+    if required.issubset(nodes_df.columns):
+        node_coords = {
+            row.node_id: (float(row.lat), float(row.lon))
+            for row in nodes_df.itertuples(index=False)
+        }
+        if "layer" in nodes_df.columns:
+            for layer_value, layer_df in nodes_df.groupby("layer", sort=False):
+                layer_key = str(layer_value)
+                nearest_ids_by_layer[layer_key] = layer_df["node_id"].astype(str).tolist()
+                nearest_lats_by_layer[layer_key] = layer_df["lat"].astype(float).tolist()
+                nearest_lons_by_layer[layer_key] = layer_df["lon"].astype(float).tolist()
+        nearest_ids_by_layer["__all__"] = nodes_df["node_id"].astype(str).tolist()
+        nearest_lats_by_layer["__all__"] = nodes_df["lat"].astype(float).tolist()
+        nearest_lons_by_layer["__all__"] = nodes_df["lon"].astype(float).tolist()
+    else:
+        warnings.warn(
+            f"nodes CSV missing one of {required}; visualisation disabled.",
+            stacklevel=2,
+        )
+
+    cached = (node_coords, nearest_ids_by_layer, nearest_lats_by_layer, nearest_lons_by_layer)
+    _NODE_GEO_CACHE[cache_key] = cached
+    return cached
 
 
 @lru_cache(maxsize=8)
@@ -703,12 +757,12 @@ class TravelGraphManager:
         self._routes      = list(routes) if routes is not None else None
 
         if edges_df is not None:
-            self._edges_df = edges_df.copy()
+            self._edges_df = edges_df
         else:
             self._edges_df = self._load_edges(_Path(edges_csv))
 
         if nodes_df is not None:
-            self._nodes_df = nodes_df.copy()
+            self._nodes_df = nodes_df
         else:
             self._nodes_df = self._load_nodes(_Path(nodes_csv)) if nodes_csv else None
 
@@ -719,14 +773,20 @@ class TravelGraphManager:
             else self._edges_df
         )
 
-        self._graph      = self._build_weighted_graph(self._active_edges)
         self._edge_by_id = {
             row.edge_id: row
             for row in self._active_edges.itertuples(index=False)
         }
-        self._route_edge_ids = self._build_route_edge_index()
-        self._accessible  = self._build_accessible_index()
-        self._node_coords = self._build_node_coords()
+        self._graph = None
+        self._route_edge_ids = None
+        self._accessible = None
+        (
+            self._node_coords,
+            self._nearest_node_ids_by_layer,
+            self._nearest_node_lats_by_layer,
+            self._nearest_node_lons_by_layer,
+        ) = _cached_node_geo_structures(self._nodes_df)
+        self._build_shortest_path_index()
 
         self._sanity_check(quiet=bool(quiet))
 
@@ -820,6 +880,11 @@ class TravelGraphManager:
             )
         return G
 
+    def _ensure_graph(self) -> nx.DiGraph:
+        if self._graph is None:
+            self._graph = self._build_weighted_graph(self._active_edges)
+        return self._graph
+
     def _build_accessible_index(self) -> dict:
         """
         Build edge_id → [reachable edge_ids] from the ACTIVE (possibly filtered) graph.
@@ -848,6 +913,11 @@ class TravelGraphManager:
             for row in self._active_edges.itertuples(index=False)
         }
 
+    def _ensure_accessible_index(self) -> dict:
+        if self._accessible is None:
+            self._accessible = self._build_accessible_index()
+        return self._accessible
+
     def _build_route_edge_index(self) -> dict:
         """Build edge_id -> [route_id, ...] for active ride edges."""
         if not self._routes:
@@ -861,25 +931,55 @@ class TravelGraphManager:
                     index.setdefault(edge_id, []).append(route.route_id)
         return index
 
-    def _build_node_coords(self) -> dict:
-        """Build node_id → (lat, lon) from the nodes DataFrame (if loaded)."""
-        if self._nodes_df is None:
-            return {}
-        required = {"node_id", "lat", "lon"}
-        if not required.issubset(self._nodes_df.columns):
-            warnings.warn(
-                f"nodes CSV missing one of {required}; visualisation disabled.",
-                stacklevel=2,
+    def _ensure_route_edge_index(self) -> dict:
+        if self._route_edge_ids is None:
+            self._route_edge_ids = self._build_route_edge_index()
+        return self._route_edge_ids
+
+    def _build_shortest_path_index(self) -> None:
+        """Build compact adjacency structures for fast shortest-path lookup."""
+        nodes = list(
+            pd.Index(self._active_edges["u"].astype(str))
+            .append(pd.Index(self._active_edges["v"].astype(str)))
+            .unique()
+        )
+        self._shortest_path_nodes = nodes
+        self._shortest_path_index = {node_id: idx for idx, node_id in enumerate(nodes)}
+        adjacency_nodes: list[list[int]] = [[] for _ in nodes]
+        adjacency_weights: list[list[float]] = [[] for _ in nodes]
+        adjacency_edge_ids: list[list[str]] = [[] for _ in nodes]
+        self._edge_weight_by_id: dict[str, float] = {}
+
+        latest_by_pair: dict[tuple[str, str], tuple[int, float, str]] = {}
+        for row in self._active_edges.itertuples(index=False):
+            u = str(row.u)
+            v = str(row.v)
+            u_idx = self._shortest_path_index[u]
+            v_idx = self._shortest_path_index[v]
+            weight = float(self._edge_weight(str(row.edge_type), float(row.dist)))
+            self._edge_weight_by_id[str(row.edge_id)] = weight
+            latest_by_pair[(u, v)] = (
+                v_idx,
+                weight,
+                str(row.edge_id),
             )
-            return {}
-        return {
-            row.node_id: (float(row.lat), float(row.lon))
-            for row in self._nodes_df.itertuples(index=False)
-        }
+
+        for (u, _v), (v_idx, weight, edge_id) in latest_by_pair.items():
+            u_idx = self._shortest_path_index[u]
+            adjacency_nodes[u_idx].append(v_idx)
+            adjacency_weights[u_idx].append(weight)
+            adjacency_edge_ids[u_idx].append(edge_id)
+
+        self._shortest_path_adjacency_nodes = adjacency_nodes
+        self._shortest_path_adjacency_weights = adjacency_weights
+        self._shortest_path_adjacency_edge_ids = adjacency_edge_ids
+
+    def get_edge_weight(self, edge_id: str) -> float | None:
+        return self._edge_weight_by_id.get(edge_id)
 
     def _sanity_check(self, *, quiet: bool = False) -> None:
-        assert self._graph.number_of_nodes() > 0, "Graph has no nodes."
-        assert self._graph.number_of_edges() > 0, "Graph has no edges."
+        assert len(self._shortest_path_nodes) > 0, "Graph has no nodes."
+        assert len(self._active_edges) > 0, "Graph has no edges."
         actual_types = set(self._active_edges["edge_type"].unique())
         unknown = actual_types - _ALL_KNOWN_TYPES
         if unknown:
@@ -892,8 +992,8 @@ class TravelGraphManager:
         )
         print(
             f"[TravelGraphManager] {route_str} | "
-            f"{self._graph.number_of_nodes():,} nodes | "
-            f"{self._graph.number_of_edges():,} edges"
+            f"{len(self._shortest_path_nodes):,} nodes | "
+            f"{len(self._active_edges):,} edges"
         )
         print(f"  Edge types : {sorted(actual_types)}")
         print(
@@ -911,7 +1011,7 @@ class TravelGraphManager:
     @property
     def graph(self) -> nx.DiGraph:
         """Underlying weighted NetworkX DiGraph (active edges only)."""
-        return self._graph
+        return self._ensure_graph()
 
     @property
     def routes(self):
@@ -941,11 +1041,11 @@ class TravelGraphManager:
         Edge_ids reachable after traversing edge_id. Reflects the active
         (route-filtered) graph — O(1) lookup.
         """
-        return list(self._accessible.get(edge_id, []))
+        return list(self._ensure_accessible_index().get(edge_id, []))
 
     def get_route_ids_for_edge(self, edge_id: str) -> list[str]:
         """Return the route IDs that contain an active ride edge."""
-        return list(self._route_edge_ids.get(edge_id, []))
+        return list(self._ensure_route_edge_index().get(edge_id, []))
 
     # ── Method 1: generate_random_ride_loop ─────────────────────────────────
 
@@ -1028,23 +1128,19 @@ class TravelGraphManager:
     def find_nearest_node(self, lat: float, lon: float, layer: str = None) -> str:
         if self._nodes_df is None:
             raise ValueError("Nodes dataframe not loaded. Provide nodes_csv to TravelGraphManager.")
-        
-        # Filter by layer if specified
-        if layer is not None:
-            nodes = self._nodes_df[self._nodes_df['layer'] == layer].copy()
-        else:
-            nodes = self._nodes_df.copy()
-        
-        if len(nodes) == 0:
+        layer_key = str(layer) if layer is not None else "__all__"
+        node_ids = self._nearest_node_ids_by_layer.get(layer_key)
+        lats = self._nearest_node_lats_by_layer.get(layer_key)
+        lons = self._nearest_node_lons_by_layer.get(layer_key)
+        if node_ids is None or lats is None or lons is None:
             return None
-        
-        # Calculate distances using Euclidean distance
-        # (OK for small areas, more precise with haversine if needed)
-        distances = ((nodes['lat'] - lat)**2 + (nodes['lon'] - lon)**2)**0.5
-        nearest_idx = distances.idxmin()
-        nearest_node = nodes.loc[nearest_idx]
-        
-        return nearest_node['node_id']
+        if nearest_node_id is not None:
+            return nearest_node_id(node_ids, lats, lons, float(lat), float(lon))
+        if not node_ids:
+            return None
+        distances = ((np.asarray(lats, dtype=float) - lat) ** 2 + (np.asarray(lons, dtype=float) - lon) ** 2) ** 0.5
+        nearest_idx = int(distances.argmin())
+        return node_ids[nearest_idx]
 
     # ── Method 2: calculate_shortest_path ───────────────────────────────────
 
@@ -1065,14 +1161,25 @@ class TravelGraphManager:
         nx.NetworkXNoPath  If no path exists (e.g. destination unreachable
                            with the given routes).
         """
-        if u not in self._graph:
+        if u not in self._shortest_path_index:
             raise nx.NodeNotFound(f"Origin not in active graph: {u!r}")
-        if v not in self._graph:
+        if v not in self._shortest_path_index:
             raise nx.NodeNotFound(f"Destination not in active graph: {v!r}")
         if u == v:
             return []
-        node_path = nx.dijkstra_path(self._graph, u, v, weight="weight")
-        return [self._graph[a][b]["edge_id"] for a, b in zip(node_path[:-1], node_path[1:])]
+        if shortest_path_edge_ids is not None:
+            try:
+                return shortest_path_edge_ids(
+                    self._shortest_path_adjacency_nodes,
+                    self._shortest_path_adjacency_weights,
+                    self._shortest_path_adjacency_edge_ids,
+                    self._shortest_path_index[u],
+                    self._shortest_path_index[v],
+                )
+            except ValueError as exc:
+                raise nx.NetworkXNoPath(str(exc)) from exc
+        node_path = nx.dijkstra_path(self._ensure_graph(), u, v, weight="weight")
+        return [self._ensure_graph()[a][b]["edge_id"] for a, b in zip(node_path[:-1], node_path[1:])]
 
     # ── Method 3: visualize_path ─────────────────────────────────────────────
 

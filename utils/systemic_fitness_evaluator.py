@@ -8,16 +8,82 @@ routes.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Any, Sequence
+import weakref
 
 import numpy as np
 
 from .baseline_route_generator import BaselineRouteGenerator
 from .jeepney_route_env import RouteFitnessResult, calculate_route_fitness
 from .passenger_generation import PassengerMap
+
+try:  # pragma: no cover - optional compiled acceleration
+    from ._route_speedups import summarize_costs
+except Exception:  # pragma: no cover - fallback when extension is unavailable
+    from .route_speedups import summarize_costs
+
+
+_PROCESS_EVALUATOR: SystemicFitnessEvaluator | None = None
+
+
+def _process_worker_init(payload: dict[str, Any]) -> None:
+    global _PROCESS_EVALUATOR
+    _PROCESS_EVALUATOR = SystemicFitnessEvaluator(
+        passenger_map=payload["passenger_map"],
+        drive_graph_raw=payload["drive_graph_raw"],
+        drive_graph_proj=payload["drive_graph_proj"],
+        place_queries=payload["place_queries"],
+        point_query=payload["point_query"],
+        point_dist=payload["point_dist"],
+        edges_csv=payload["edges_csv"],
+        nodes_csv=payload["nodes_csv"],
+        config_path=payload["config_path"],
+        weight_profile=payload["weight_profile"],
+        unserved_penalty_beta=payload["unserved_penalty_beta"],
+        evaluation_test_mean=payload["evaluation_test_mean"],
+        evaluation_test_std=payload["evaluation_test_std"],
+        min_evaluation_tests=payload["min_evaluation_tests"],
+        max_evaluation_tests=payload["max_evaluation_tests"],
+        background_route_mean=payload["background_route_mean"],
+        background_route_std=payload["background_route_std"],
+        min_noise_routes=payload["min_noise_routes"],
+        max_noise_routes=payload["max_noise_routes"],
+        std_penalty_weight=payload["std_penalty_weight"],
+        max_workers=1,
+        seed=payload["seed"],
+    )
+
+
+def _process_worker_run_chunk(
+    task: tuple[Any, str, str, int, list[tuple[int, int, int, int]]]
+) -> list[tuple[float, float, float, int, RouteFitnessResult]]:
+    if _PROCESS_EVALUATOR is None:
+        raise RuntimeError("Process worker was not initialized.")
+    candidate_route, route_id, noise_route_prefix, resolved_batch_size, test_specs = task
+    results: list[tuple[float, float, float, int, RouteFitnessResult]] = []
+    for test_index, noise_count, background_seed, fitness_seed in test_specs:
+        results.append(
+            _PROCESS_EVALUATOR._evaluate_single_system(
+                candidate_route=candidate_route,
+                route_id=route_id,
+                noise_route_prefix=noise_route_prefix,
+                resolved_batch_size=resolved_batch_size,
+                test_index=test_index,
+                noise_count=noise_count,
+                background_seed=background_seed,
+                fitness_seed=fitness_seed,
+            )
+        )
+    return results
+
+
+def _shutdown_process_executor(executor: ProcessPoolExecutor | None) -> None:
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 @dataclass(slots=True)
@@ -109,6 +175,32 @@ class SystemicFitnessEvaluator:
         self.drive_graph_raw = self._background_generator.drive_graph_raw
         self.drive_graph_proj = self._background_generator.drive_graph_proj
         self._evaluation_cache: dict[tuple, SystemicFitnessResult] = {}
+        self._process_executor: ProcessPoolExecutor | None = None
+        self._process_executor_finalizer: weakref.finalize | None = None
+        self._process_pool_max_workers = self.max_workers if self.max_workers is not None else (os.cpu_count() or 1)
+        self._process_init_payload = {
+            "passenger_map": self.passenger_map,
+            "drive_graph_raw": self.drive_graph_raw,
+            "drive_graph_proj": self.drive_graph_proj,
+            "place_queries": None,
+            "point_query": None,
+            "point_dist": 30_000.0,
+            "edges_csv": self.edges_csv,
+            "nodes_csv": self.nodes_csv,
+            "config_path": self.config_path,
+            "weight_profile": self.weight_profile,
+            "unserved_penalty_beta": self.unserved_penalty_beta,
+            "evaluation_test_mean": self.evaluation_test_mean,
+            "evaluation_test_std": self.evaluation_test_std,
+            "min_evaluation_tests": self.min_evaluation_tests,
+            "max_evaluation_tests": self.max_evaluation_tests,
+            "background_route_mean": self.background_route_mean,
+            "background_route_std": self.background_route_std,
+            "min_noise_routes": self.min_noise_routes,
+            "max_noise_routes": self.max_noise_routes,
+            "std_penalty_weight": self.std_penalty_weight,
+            "seed": self._seed,
+        }
 
     @staticmethod
     def _route_signature(route_like: Any) -> tuple[Any, ...]:
@@ -160,12 +252,31 @@ class SystemicFitnessEvaluator:
         )
 
     def _worker_count(self, task_count: int) -> int:
-        if task_count < 2:
+        if task_count < 8:
             return 1
-        if self.max_workers is not None:
-            return min(self.max_workers, task_count)
-        cpu_count = os.cpu_count() or 1
-        return min(cpu_count, task_count)
+        return min(self._process_pool_max_workers, task_count)
+
+    def _get_process_executor(self) -> ProcessPoolExecutor:
+        if self._process_executor is None:
+            self._process_executor = ProcessPoolExecutor(
+                max_workers=self._process_pool_max_workers,
+                initializer=_process_worker_init,
+                initargs=(self._process_init_payload,),
+            )
+            self._process_executor_finalizer = weakref.finalize(
+                self,
+                _shutdown_process_executor,
+                self._process_executor,
+            )
+        return self._process_executor
+
+    def close(self) -> None:
+        if self._process_executor is not None:
+            if self._process_executor_finalizer is not None:
+                self._process_executor_finalizer.detach()
+                self._process_executor_finalizer = None
+            _shutdown_process_executor(self._process_executor)
+            self._process_executor = None
 
     def _evaluate_single_system(
         self,
@@ -257,7 +368,7 @@ class SystemicFitnessEvaluator:
             )
 
         worker_count = self._worker_count(resolved_n_tests)
-        if worker_count == 1:
+        if worker_count == 1 or resolved_n_tests == 1:
             results = [
                 self._evaluate_single_system(
                     candidate_route=candidate_route,
@@ -272,22 +383,15 @@ class SystemicFitnessEvaluator:
                 for test_index, noise_count, background_seed, fitness_seed in test_specs
             ]
         else:
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                results = list(
-                    executor.map(
-                        lambda spec: self._evaluate_single_system(
-                            candidate_route=candidate_route,
-                            route_id=route_id,
-                            noise_route_prefix=noise_route_prefix,
-                            resolved_batch_size=resolved_batch_size,
-                            test_index=spec[0],
-                            noise_count=spec[1],
-                            background_seed=spec[2],
-                            fitness_seed=spec[3],
-                        ),
-                        test_specs,
-                    )
-                )
+            chunk_size = max(1, ceil(resolved_n_tests / worker_count))
+            chunks = [test_specs[i : i + chunk_size] for i in range(0, len(test_specs), chunk_size)]
+            executor = self._get_process_executor()
+            chunk_tasks = [
+                (candidate_route, route_id, noise_route_prefix, resolved_batch_size, chunk)
+                for chunk in chunks
+            ]
+            chunk_results = list(executor.map(_process_worker_run_chunk, chunk_tasks, chunksize=1))
+            results = [item for chunk in chunk_results for item in chunk]
 
         for (test_index, noise_count, _background_seed, _fitness_seed), (avg_gtc, passenger_std, reward, _noise_count, route_result) in zip(
             test_specs,
@@ -299,14 +403,9 @@ class SystemicFitnessEvaluator:
             passenger_gtc_std_values.append(passenger_std)
             reward_values.append(reward)
 
-        average_gtc = float(np.mean(gtc_values)) if gtc_values else 0.0
-        std_gtc = float(np.std(gtc_values, ddof=0)) if len(gtc_values) > 1 else 0.0
-        average_passenger_gtc_std = float(np.mean(passenger_gtc_std_values)) if passenger_gtc_std_values else 0.0
-        std_passenger_gtc_std = (
-            float(np.std(passenger_gtc_std_values, ddof=0)) if len(passenger_gtc_std_values) > 1 else 0.0
-        )
-        average_reward = float(np.mean(reward_values)) if reward_values else 0.0
-        std_reward = float(np.std(reward_values, ddof=0)) if len(reward_values) > 1 else 0.0
+        average_gtc, std_gtc, _total_gtc = summarize_costs(gtc_values)
+        average_passenger_gtc_std, std_passenger_gtc_std, _total_passenger_std = summarize_costs(passenger_gtc_std_values)
+        average_reward, std_reward, _total_reward = summarize_costs(reward_values)
         reward = -float(average_gtc + self.std_penalty_weight * std_gtc)
 
         result = SystemicFitnessResult(

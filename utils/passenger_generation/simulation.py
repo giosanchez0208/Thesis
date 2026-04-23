@@ -110,7 +110,7 @@ class Simulation:
         self.passenger_map = passenger_map or PassengerMap()
 
         self._nearest_node_cache: dict[tuple[str, float, float], Optional[str]] = {}
-        self._path_cache: dict[tuple[str, str], list[str]] = {}
+        self._path_cache: dict[tuple[str, str], dict] = {}
         self._route_fleets: dict[str, list[Jeep]] = {}
         self._passenger_path_cache: dict[tuple[str, str], dict] = {}
         self._playback_rows: list[dict] = []
@@ -238,22 +238,61 @@ class Simulation:
         return self._nearest_node_cache[key]
 
     def calculate_shortest_path(self, passenger: Passenger) -> list[str]:
+        return list(self._resolve_passenger_path(passenger)["path_edges"])
+
+    def _resolve_passenger_path(self, passenger: Passenger) -> dict:
+        cache_key = (str(passenger.start_node_id), str(passenger.end_node_id))
+        cached = self._passenger_path_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         start_graph_node_id = self.find_nearest_node(passenger.start_lat, passenger.start_lon, layer="start_walk")
         end_graph_node_id = self.find_nearest_node(passenger.end_lat, passenger.end_lon, layer="end_walk")
         if not start_graph_node_id or not end_graph_node_id:
-            return []
+            payload = {"found": False, "start_graph_node": start_graph_node_id, "end_graph_node": end_graph_node_id, "path_edges": [], "path_nodes": []}
+            self._passenger_path_cache[cache_key] = payload
+            return payload
 
-        cache_key = (start_graph_node_id, end_graph_node_id)
-        if cache_key not in self._path_cache:
-            self._path_cache[cache_key] = self.travel_graph_mgr.calculate_shortest_path(
-                start_graph_node_id,
-                end_graph_node_id,
+        path_key = (start_graph_node_id, end_graph_node_id)
+        path_record = self._path_cache.get(path_key)
+        if path_record is None:
+            path_edges = list(
+                self.travel_graph_mgr.calculate_shortest_path(
+                    start_graph_node_id,
+                    end_graph_node_id,
+                )
             )
-        return list(self._path_cache[cache_key])
+            if not path_edges:
+                path_nodes = [start_graph_node_id]
+            else:
+                path_nodes = [start_graph_node_id]
+                for edge_id in path_edges:
+                    edge = self.travel_graph_mgr.get_edge(edge_id)
+                    if edge is not None:
+                        path_nodes.append(edge.v)
+            path_record = {
+                "found": True,
+                "start_graph_node": start_graph_node_id,
+                "end_graph_node": end_graph_node_id,
+                "path_edges": path_edges,
+                "path_nodes": path_nodes,
+            }
+            self._path_cache[path_key] = path_record
+
+        payload = {
+            "found": bool(path_record["found"]),
+            "start_graph_node": path_record["start_graph_node"],
+            "end_graph_node": path_record["end_graph_node"],
+            "path_edges": list(path_record["path_edges"]),
+            "path_nodes": list(path_record["path_nodes"]),
+        }
+        self._passenger_path_cache[cache_key] = payload
+        return payload
 
     def prepare_passenger(self, passenger: Passenger) -> dict:
         passenger.set_travel_graph(self.travel_graph_mgr)
-        path_edges = self.calculate_shortest_path(passenger)
+        path_record = self._resolve_passenger_path(passenger)
+        path_edges = list(path_record["path_edges"])
         passenger.current_path_edge_index = 0
         passenger.current_edge_progress_m = 0.0
         passenger.boarded_jeep_id = None
@@ -263,32 +302,13 @@ class Simulation:
             passenger.shortest_path_edges = []
             passenger.shortest_path_nodes = []
             passenger.state = PassengerState.COMPLETED
-            cache_key = (str(passenger.start_node_id), str(passenger.end_node_id))
-            payload = {"found": False, "path_edges": [], "path_nodes": []}
-            self._passenger_path_cache[cache_key] = payload
-            return payload
-
-        start_graph_node_id = self.find_nearest_node(passenger.start_lat, passenger.start_lon, layer="start_walk")
-        nodes = [start_graph_node_id]
-        for edge_id in path_edges:
-            edge = self.travel_graph_mgr.get_edge(edge_id)
-            if edge is not None:
-                nodes.append(edge.v)
+            return path_record
 
         passenger.shortest_path_edges = list(path_edges)
-        passenger.shortest_path_nodes = nodes
+        passenger.shortest_path_nodes = list(path_record["path_nodes"])
         passenger.current_path_index = 0
 
-        payload = {
-            "found": True,
-            "start_graph_node": start_graph_node_id,
-            "end_graph_node": self.find_nearest_node(passenger.end_lat, passenger.end_lon, layer="end_walk"),
-            "path_edges": list(path_edges),
-            "path_nodes": nodes,
-        }
-        cache_key = (str(passenger.start_node_id), str(passenger.end_node_id))
-        self._passenger_path_cache[cache_key] = payload
-        return payload
+        return path_record
 
     def prepare_passengers(self, passengers: Optional[Iterable[Passenger]] = None) -> list[dict]:
         items = list(passengers or self.passengers)

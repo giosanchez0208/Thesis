@@ -7,7 +7,6 @@ https://arxiv.org/html/2603.28385v1.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import permutations
 from pathlib import Path
 from typing import Sequence
 
@@ -18,6 +17,7 @@ from shapely.geometry import Polygon
 
 from .passenger_generation import PassengerMap
 from .travel_graph import load_graphs_for_study_area, make_coord_key, node_table_from_graph
+from .route_speedups import best_anchor_order
 
 try:
     import folium
@@ -243,19 +243,12 @@ class BaselineRouteGenerator:
         return bool(polygon.is_valid and not polygon.is_empty and polygon.area > 0.0), float(polygon.area)
 
     def _order_anchors(self, anchors: list[dict]) -> tuple[list[dict], Polygon]:
-        best_polygon: Polygon | None = None
-        best_order: list[dict] | None = None
-
-        for perm in permutations(anchors):
-            points_xy = [(item["x"], item["y"]) for item in perm]
-            polygon = Polygon(points_xy)
-            if not polygon.is_valid or polygon.is_empty or polygon.area <= 0.0:
-                continue
-            if best_polygon is None or polygon.area > best_polygon.area:
-                best_polygon = polygon
-                best_order = list(perm)
-
-        if best_polygon is None or best_order is None:
+        xs = [float(item["x"]) for item in anchors]
+        ys = [float(item["y"]) for item in anchors]
+        order, _area = best_anchor_order(xs, ys)
+        best_order = [anchors[index] for index in order]
+        best_polygon = Polygon([(item["x"], item["y"]) for item in best_order])
+        if best_polygon.is_empty or not best_polygon.is_valid or best_polygon.area <= 0.0:
             raise ValueError("The sampled anchors did not form a valid simple quadrilateral.")
         return best_order, best_polygon
 
