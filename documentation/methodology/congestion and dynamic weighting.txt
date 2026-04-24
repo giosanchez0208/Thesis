@@ -1,0 +1,7 @@
+\section{Congestion and Dynamic Weighting}
+
+While the baseline model uses static edge weights, the framework is designed to accommodate dynamic conditions. The ride weight coefficient $\beta_{ride}$ can be replaced with a time-varying or segment-specific value that reflects simulated congestion effects:
+\begin{equation}
+w_{ride}(t) = d \times \beta_{ride}(t) \times \gamma_{congestion}  
+\end{equation}
+where $\gamma_{congestion}$ is a congestion multiplier determined by the current number of jeeps traversing each edge in the network. For simulation purposes, $\gamma_{congestion}$ increases as more jeeps are assigned to a given edge, introducing higher travel disutility on heavily used corridors. This incentivizes the optimization to distribute jeepney flows more efficiently and discourages the over-concentration of vehicle routes on the same street segments. The result is a self-balancing mechanism that models congestion effects and promotes more robust route designs. Future implementations may calibrate $\gamma_{congestion}$ based on observed simulation flow or integrate queueing models for further realism.

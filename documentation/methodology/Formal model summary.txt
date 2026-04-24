@@ -1,0 +1,13 @@
+\section{Formal Model Summary}
+\noindent{The passenger simulation is a discrete-event system:}
+\[
+Simulation = (Passengers, Routes, TravelGraph, TimeStep)
+\]
+\noindent{Where:}
+\begin{itemize}[nosep]
+    \item Passengers: A dynamic set of agent objects, each with\newline 
+    $state$ $\in \{{WALK}, { WAIT}, {RIDE}, {DONE}\}$, position, origin, destination, and scheduled path.
+    \item Routes: A static collection of jeepney routes, each containing a cycle of stops and an associated fleet.
+    \item TravelGraph: The three-layer graph with nodes and weighted edges as described in Section 3.2.
+    \item TimeStep: Discrete updates at intervals $\Delta t$, with passenger and vehicle state transitions driven by the FSM and boarding constraints.
+\end{itemize}

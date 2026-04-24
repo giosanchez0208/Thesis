@@ -1,0 +1,23 @@
+\section{Passenger State Machine and Travel Execution}
+Each passenger operates within a four-state finite-state machine (FSM) that governs their behavior throughout the simulation. Agent-based models using finite-state machines are widely employed in transportation simulation to represent discrete behavioral phases such as walking, waiting, and riding \citep{tozluoglu2024, verbas2024}:
+
+\begin{itemize}
+    \item \textbf{State 1: WALK.} The passenger traverses the walkable street network toward an intermediate target node (either a jeepney boarding point, their destination, or an alighting point after exiting a jeepney). Movement occurs at walking speed $v_{\text{walk}}$ along the shortest euclidean path, with each position update advancing the agent by $\Delta x$=$v_{\text{walk}},\Delta t$. The recommended pedestrian walking speed for design purposes is 1.2–1.25 m/s (approximately 4.3–4.5 km/h), which is the standard assumed for crosswalk signal timing internationally \citep{bhuiyan2024, katsaros2024, toprakli2024}. This study adopts $v_{\text{walk}}$=1.2m/s as the baseline walking speed. When the passenger reaches their target node, they transition to the next state according to their precomputed path.
+    \item \textbf{State 2: WAIT.} The passenger remains at a designated waiting point along the jeep route’s path, monitoring approaching vehicles. At each simulation tick, the agent invokes a method willIntersect(position) to detect if any jeepney on the required route will pass the stop within the next time step. If multiple jeepneys are available, the passenger boards the first non-full jeepney (see jeepney capacity constraints below). If no suitable jeepney arrives or all are full, the passenger remains in WAIT state for the next time step. Waiting time accumulates as a metric for each passenger; extended waits are penalized in the fitness function. In the path-finding phase, wait time is already incorporated via the wait weight $\beta_{\text{wait}}$, but actual realized wait time can vary due to jeepney schedule variability and crowding.
+    \item \textbf{State 3: RIDE.} The passenger travels with the jeepney, moving at jeepney speed along the jeepney's predetermined route: $\Delta x$=$v_{\text{jeep}},\Delta t$
+    The passenger remains in RIDE state until the jeepney reaches the passenger's alighting point (as determined by their precomputed path) or until the passenger's intermediate destination is reached. At the alighting point, the passenger exits the jeepney and transitions to WALK state (or DONE if the alighting point is their final.
+    \item \textbf{State 4: DONE.} The passenger has reached their destination and is removed from the simulation. Their trip metrics (total time, walking distance, riding distance, waiting time, number of transfers) are recorded for analysis.
+\end{itemize}
+
+\FloatBarrier 
+% hello radz, i made a figure. feel free to use it for this subsection
+\begin{figure}[h]
+    \centering    \includegraphics[width=0.8\textwidth]{chap3/figures/passenger_graph.jpg}
+    \caption{Passenger Graph Traversal Visualization}
+    \label{fig:iligan_network}
+\end{figure}
+
+\FloatBarrier 
+
+
+It must be noted that, in practice, multiple travel sequences on the travel graph can yield identical generalized commute costs, especially when distinct jeepney routes overlap along common street segments. In these cases, the agent’s precomputed path specifies a sequence of edges that can be served by more than one jeepney line, and the state machine implements a simple behavioral rule: at each WAIT state, the passenger boards the first non-full jeepney that traverses the required edge/s, thereby operationalizing a first-come, first-served choice among cost-equivalent alternatives without altering the underlying shortest-path solution.

@@ -1,0 +1,12 @@
+\section{Graph Construction Summary}
+
+The complete travel graph $G = (V, E)$ is constructed by:
+\begin{enumerate}[nosep]
+    \item Downloading and simplifying the OSM walkable network for the study area.
+    \item Duplicating the network into start walk and end walk layers.
+    \item Encoding each jeepney route as a unidirectional cyclic subgraph with ride-weighted edges.
+    \item Connecting layers via wait, alight, direct, and transfer edges based on coordinate coincidence.
+    \item Assigning empirically calibrated weights to each edge type.
+\end{enumerate}
+
+The resulting graph supports efficient shortest-path queries using standard algorithms (e.g., Dijkstra, A*), with the path cost directly interpretable as generalized travel time in equivalent in-vehicle minutes. This representation enables the agent-based simulation to route each passenger optimally given their origin, destination, and the current jeepney network configuration, providing the fitness evaluation mechanism for the metaheuristic optimization.

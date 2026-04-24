@@ -1,0 +1,79 @@
+\section{Passenger Spawning and Despawning via Foot Traffic Mapping}
+
+\noindent{Rather than assigning origins and destinations uniformly at random, passenger generation is grounded in an empirically-derived foot traffic map. This approach leverages network topology, built-environment factors, and observed traffic patterns to produce spatially realistic and temporally consistent demand.}
+
+\noindent{Boarding points are treated as discrete stop nodes embedded in the ride-layer of the travel graph. This simplifies passenger-waiting logic (WAIT state) and permits straightforward mapping between foot-traffic-weighted edges and explicit stops. In contexts where formal designated stops are absent and passengers instead board at informal key nodes (e.g., intersections, street corners, ad-hoc curbside locations), the same demand-weighting and Poisson-spawning framework can be adapted by (i) treating high-foot-traffic intersections or POI-centroids as probabilistic stop candidates, (ii) representing boarding location choice as a continuous/nearest-node selection rather than a fixed-stop assignment, and (iii) calibrating boarding density using field counts or pheromone-accumulated passenger paths. We therefore separate two operational regimes in our approach: (1) the \emph{designated-stop regime} which benefits directly from stop-centered optimization, and (2) the \emph{informal-stop regime} which requires additional modeling of stop emergence and warrants a dedicated study.}
+
+\subsubsection{Constructing the Foot Traffic Map via Procedural Data Propagation}
+
+The study area is modeled as a primal graph $G = (N, E)$ representing the road network topology. To estimate vehicular flow cost without exhaustive city-wide data collection, a stratified random sampling strategy is employed. Real-time traffic data is acquired via the TomTom Traffic API for a subset of $n=100$ edges (given the limitations of their freemium API), selected to maximize spatial coverage across varying road types.
+
+These observed values function as seed points for a spatiotemporal imputation framework \citep{chen2022}. By utilizing Betweenness Centrality \citep{boeing2021} and local building density as structural priors, the model propagates synthetic Average Daily Traffic (ADT) values to the unobserved edges in the network. This results in a comprehensive traffic map, denoted as $\text{ADT}_{\text{prop}}$, which serves as the primary environmental variable for the pedestrian cost function:
+
+\begin{equation}
+    C_{\text{traffic}} = w_1 \cdot \ln(\text{ADT}_{\text{prop}})
+    \label{eq:traffic_cost}
+\end{equation}
+
+This logarithmic transformation accounts for the diminishing marginal impact of vehicular volume on pedestrian comfort at high saturation levels.
+
+We treat the study area (e.g., Iligan City) as a primal graph $G = (N, E)$. Vehicular traffic data is acquired via the TomTom Traffic API for a stratified random sample of $n=100$ nodes. These ground-truth observations are used to train a spatial regressor, utilizing Betweenness Centrality \citep{boeing2021} and building density as feature inputs. The trained model procedurally generates synthetic Average Daily Traffic (ADT) values for the remaining unobserved edges in the network \citep{pun2019}. This ensures that the traffic variable input into the pedestrian model reflects real-world congestion patterns rather than uniform assumptions.
+
+The estimated pedestrian volume is then computed via a log-linear regression model:
+
+\begin{equation}
+\ln(V_{\text{ped}}) = \beta_0 + \beta_1 \ln(\text{ADT}_{\text{prop}}) + \beta_2 \ln(D_{\text{bldg}}) + \beta_3 \ln(C_B) + \beta_4 (L_{\text{mix}}) + \epsilon
+\label{eq:ped_volume}
+\end{equation}
+
+\noindent{where $V_{\text{ped}}$ denotes the estimated daily pedestrian volume, $\text{ADT}_{\text{prop}}$ is the procedurally propagated vehicular traffic intensity derived from the TomTom sample, $D_{\text{bldg}}$ is building density derived from OSMnx footprints (a proxy for trip generation and land-use intensity), $C_B$ is the Betweenness Centrality score, $L_{\text{mix}}$ is an optional land-use mix entropy measure, and $\beta_i$ are calibration coefficients obtained from local sample counts or transferred from comparable direct-demand studies \citep{sobreira2023, zhangp2024}. The resulting foot traffic map assigns a weighted value to each edge, representing its estimated pedestrian flow.}
+
+\begin{figure}[h]
+    \centering    \includegraphics[width=0.8\textwidth]{chap3/figures/ddm.png}
+    \caption{Projected pedestrian volume across residential and non-residential zones in Iligan City. Intensities are inferred from vehicular Average Daily Traffic (ADT), illustrating that central urban arteries serve as the primary loci for pedestrian activity despite the environmental cost of vehicular flow.}
+    \label{fig:iligan_network}
+\end{figure}
+
+\subsubsection{Passenger Generation via Weighted Spatial Distribution with Poisson and Sociodemographic Conditioning}
+
+Passengers are generated as a spatially heterogeneous Poisson process whose spatial probabilities remain anchored to the foot traffic map. The foot traffic map acts as a spatial probability distribution to bias origins and destinations, while sociodemographic heterogeneity modulates per-location arrival intensities. This integrates the original weighted spatial distribution approach with the survey-derived behavioral heterogeneity described in Section 3.1.
+
+\begin{enumerate}[nosep]
+    \item \textbf{Origin Selection - weighted spatial distribution retained.} A random location is drawn from the foot traffic map, weighted by $V_{\text{ped}}(e,t)$. This preserves the original intent that edges with higher pedestrian volume, influenced by ADT, building density, and centrality, generate proportionally more potential passengers.
+    \item \textbf{Sociodemographic sampling at origin.} For the sampled origin edge $e$, draw a sociodemographic group $g$ from the edge-specific distribution $\pi_g(e)$ obtained by post-stratifying survey responses to local population margins (age bands, mobility-limited flag, income bracket, vehicle ownership, trip purpose). This step conditions each potential passenger on observed sociodemographic heterogeneity.
+    \item \textbf{Individual mode propensity.} For group $g$, use the survey or a fitted logistic model to obtain a jeepney mode-propensity $\rho_g$. Only sampled individuals who pass this probabilistic choice are treated as potential jeepney arrivals.
+    \item \textbf{Destination Selection - gravity or shortest-path probability.} Destination selection follows the previously described gravity-model or shortest-path-based probability distribution, with destination attractiveness measured by $V_{\text{ped}}$ or land-use mix. The gravity model preserves the distance-decay behavior present in the original text.
+    \item \textbf{Per-edge, per-group Poisson intensity.} Arrival intensity at edge \(e\) and time \(t\) contributed by group \(g\) is
+    \begin{equation}
+    \lambda_{e,g}(t)=\kappa\,V_{\mathrm{ped}}(e,t)\,\pi_g(e)\,\rho_g\,h_g(t),
+    \end{equation}
+    where \(\kappa\) is a global scaling constant chosen during calibration and \(h_g(t)\) is a group-specific time-of-day profile. This parameterization is consistent with the non-homogeneous Poisson point process modeling framework, in which the intensity function can be expressed as a log-linear function of predictor variables. ~\citep{baddeley2015spatial}.    
+    \item \textbf{Draw arrivals.} For each $e$ and $g$, draw arrivals $N_{e,g}(t)\sim\text{Poisson}(\lambda_{e,g}(t)\Delta t)$ where $\Delta t$ is the simulation time step. Total arrivals at $e$ are $N_e(t)=\sum_g N_{e,g}(t)$. For each arrival, sample destination as above and initialize the agent in state WALK.
+    \item \textbf{Behavioral parameter assignment.} For the generated agent belonging to group $g$, sample willingness-to-walk from the group-conditional survey distribution and sample transfer aversion. These realized individual parameters are used to constrain or bias pathfinding (e.g., disallow boarding locations beyond the individual's WTW threshold unless chosen as a higher-cost option).
+\end{enumerate}
+
+By explicitly retaining $V_{\text{ped}}$ as the spatial weighting mechanism while conditioning Poisson arrival intensities on $\pi_g(e)$ and $\rho_g$, the model preserves the original weighted spatial distribution and gains behavioral realism. This structure allows experiments that keep the spatial footprint fixed but vary accessibility and equity outcomes by sociodemographic group.
+
+\noindent\textbf{Notes on integration with Arrival Rate Calibration.} Calibrate $\kappa$ so that
+\[
+    \sum_e \sum_g \lambda_{e,g}(t)\Delta t \approx R_{\text{target}}(t),
+\]
+where $R_{\text{target}}(t)$ is derived from observed ridership or modal-share scaling of summed $V_{\text{ped}}(e,t)$. Use post-stratification to compute $\pi_g(e)$ and validate group-level boarding shares against available counts. Preserve the weighted spatial distribution diagnostics: boarding density should remain proportional to $V_{\text{ped}}$ after conditioning, unless policy scenarios or behavioral shifts change $\rho_g$ or $h_g(t)$.
+
+This demand generation mechanism reflects the monocentric model assumption that commuter trips primarily follow radial patterns between residential peripheries and central employment districts \citep{manser2020}, \textit{while explicitly grounding these patterns in the observed spatial structure of the city}. In Philippine cities, jeepneys account for a substantial share of motorized person trips and remain central to everyday mobility and to debates on public transport modernization and just transition \citep{gatarin2024}. By anchoring demand to foot traffic, the model captures the concentration of walking accessibility near jeepney stops and popular destinations, improving realism over uniform random assignment.
+
+\subsubsection{Arrival Rate Calibration}
+
+The Poisson arrival rate $\Lambda$ is calibrated to match observed or target ridership levels. For exploratory simulation and proof-of-concept studies, a typical range is $0.5$–$5$ passengers per simulation step (time step $\Delta t = 1$ second or $10$ seconds, depending on scale). Calibration is performed through the following steps:
+
+\begin{enumerate}[nosep]
+    \item $V_{\text{ped}}$ is summed across all edges to obtain total citywide pedestrian volume.
+    \item The sum is divided by the jeepney modal share (e.g., 40\% in Philippine contexts) to estimate the fraction of pedestrians who convert to jeepney demand.
+    \item $\Lambda$ is scaled to match historical or survey-based jeepney ridership for the study area.
+\end{enumerate}
+
+In agent-based and simulation-based transit studies, passenger arrivals modeled as Poisson processes enable stochastic yet statistically tractable demand generation \citep{singh2023}. Explicit grounding in foot traffic ensures demand heterogeneity reflects real urban structure rather than artificial uniformity.
+
+\subsubsection{Passenger Despawning and Trip Completion}
+
+Passengers despawn upon reaching their destination, transitioning to state DONE. This frees computational resources and enables tracking of completed trips for metrics such as average commute time, total waiting time, boarding location, and route utilization. By measuring boarding points against the foot traffic map, model realism can be validated: areas with high foot traffic should exhibit proportionally higher boarding counts, providing a diagnostic check on demand-supply alignment.

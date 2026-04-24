@@ -1,0 +1,19 @@
+\section{Synchronization and Update Sequence}
+\noindent{At each simulation time step, the following sequence is executed.}
+
+\begin{enumerate}[nosep]
+    \item Passenger generation: Generate Nnew passengers according to $Poisson(\lambda \Delta t)$. Assign each origin, destination, and compute the shortest path.
+    \item Passenger state updates:
+        \begin{enumerate}[label=\alph*., nosep]
+            \item For each passenger in WALK state: advance position by $v_{walk}\Delta t$. 
+            \item For each passenger in WAIT state: check for boarding opportunities.
+            \item For each passenger in RIDE state: advance position with jeepney, check for alighting. 
+        \end{enumerate}
+    \item Jeepney updates:
+        \begin{enumerate}[label=\alph*., nosep]
+            \item For each jeepney: advance position by $v_{jeep}(t)\Delta t$. along route,
+            \item Process boarding and alighting events.
+            \item Update occupancy counts.
+        \end{enumerate}
+    \item Metrics accumulation: Record waiting times, completed trips, and route utilization. 
+\end{enumerate}

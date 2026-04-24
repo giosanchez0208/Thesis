@@ -1,0 +1,38 @@
+\section{Path Determination via Shortest-Path Search}
+Upon generation, each passenger immediately computes their shortest path from their origin location to their destination using Dijkstra's algorithm applied to the travel graph constructed in Section 3.2. The algorithm operates over the three-layer graph structure, with:
+
+\begin{itemize}[nosep]
+    \item Source node: A node in the start walk layer (layer 1) at or near the passenger's origin.
+    \item Sink node: A node in the end walk layer (layer 3) at or near the passenger's destination.
+\end{itemize}
+
+\indent{The cost function is:}
+
+\begin{equation}
+\text{cost}(u, v) =
+\begin{cases}
+d \cdot \beta_{\text{walk}} 
+    & \text{if } u, v \in V_{\text{walk}}, \\
+
+\beta_{\text{wait}} 
+    & \text{if } u \in V_{\text{start\_walk}},\; v \in V_{\text{ride}} \; (\text{boarding}), \\
+
+d \cdot \beta_{\text{ride}}(t) \cdot \gamma_{\text{congestion}}
+    & \text{if } u, v \in V_{\text{ride}} \; (\text{same route}), \\
+
+\beta_{\text{transfer}}
+    & \text{if } u \in V_{\text{end\_walk}},\; v \in V_{\text{ride}} \; (\text{transfer}), \\
+
+0 
+    & \text{if } u \in V_{\text{ride}},\; v \in V_{\text{end\_walk}} \; (\text{alight}), \\
+
+0 
+    & \text{if } u \in V_{\text{start\_walk}},\; v \in V_{\text{end\_walk}} \; (\text{direct}).
+\end{cases}
+\end{equation}
+
+The resulting path encodes the passenger's full itinerary: which streets they walk, which jeepney routes they board and in what order, where they transfer, and where they alight. Crucially, the path cost (in equivalent in-vehicle minutes) reflects the disutility of their entire journey, including walking time, waiting time, riding time, and transfer penalties.
+
+\indent{Once the path is computed, the passenger stores it and begins execution through the state machine described below.}
+
+\indent{Although Dijkstra’s algorithm returns a single shortest path for implementation convenience, the underlying structure of the travel graph often admits multiple paths with equal generalized travel cost. These paths are equivalent in the sense that they correspond to different jeepney routes or transfer combinations that yield the same disutility in equivalent in-vehicle minutes, even if they traverse distinct physical corridors. In this framework, such equivalence reflects the realistic situation where several jeepney lines can accommodate a passenger’s OD pair with indistinguishable perceived cost, and the simulation resolves this by assigning passengers to the first feasible vehicle that can serve any of these cost-equivalent paths.}

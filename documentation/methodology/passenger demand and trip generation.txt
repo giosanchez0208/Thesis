@@ -1,0 +1,10 @@
+\section{Passenger Demand and Trip Generation}
+\noindent{Passengers are generated according to a time-inhomogeneous Poisson process. The arrival rate $\lambda(t)$ can be constant (for simplicity) or time-varying (to model peak vs. off-peak periods):} 
+\begin{equation}
+P(N_{\Delta t} = k \mid \lambda)
+= \frac{(\lambda \Delta t)^k e^{-\lambda \Delta t}}{k!}
+\end{equation}
+\noindent{The formulation found in Equation 3.6 permits time-varying arrival rates $\lambda(t)$ for modeling peak versus off-peak periods, yielding a time-inhomogeneous Poisson process that has been validated for passenger arrivals at transit stops under stochastic demand \citep{zhangj2023, christensen2023}. The time-inhomogeneous extension follows the standard non-homogeneous Poisson process (NHPP) framework, where the arrival rate parameter varies with time while maintaining the memoryless property within infinitesimal intervals \citep{ross1996stochastic, cinlar2013introduction}. For proof-of-concept studies, a constant arrival rate is typically used.
+In calibrated simulations, $\lambda(t)$ is derived from observed or activity-based demand patterns, often segmented by hour of day. Agent-based simulations commonly employ Poisson processes for passenger generation, as this approach balances computational tractability with realistic stochastic variation in demand \citep{christensen2023, zhangj2023}.}
+
+\indent{The total number of passengers in the system at time t is bounded by the simulation duration and arrival rate, with each passenger existing for the duration of their trip (typically 5–30 simulation minutes depending on network size and congestion).}

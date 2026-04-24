@@ -1,0 +1,15 @@
+\section{Rationale for Differentiated Wait and Transfer Weights}
+
+The original framework by \citet{sanchez2025} applied a uniform boarding cost \texttt(wait\_cost) to both initial boarding and subsequent transfers. However, empirical research on transfer penalties in public transport has consistently found that the pure transfer penalty, or the disutility of changing vehicles beyond walking and waiting time, is substantial, often equivalent to 13--18 minutes of in-vehicle travel time for bus systems \citep{jara-diaz2022}. Moreover, passengers perceive transfers as qualitatively different from initial boarding: transfers involve additional uncertainty about connection reliability, physical and cognitive effort in navigating to a new vehicle, potential exposure to weather or unsafe environments, and disruption of trip continuity (Yap et al., 2024; Meskell et al., 2024).
+
+By structuring the graph such that initial boarding (start walk $\rightarrow$ jeep) uses a wait weight while subsequent boardings (end walk $\rightarrow$ jeep) use a separate transfer weight, the model can accurately capture this empirical distinction. Passengers incur the transfer penalty exactly once per transfer event, automatically counted by the number of transfer edges traversed in the shortest path. This design:
+
+\begin{enumerate}
+    \item Enables vanilla shortest-path search. Standard Dijkstra's algorithm operates without modification; all penalties are encoded as additive edge weights, preserving the algorithm's correctness and efficiency guarantees.
+    
+    \item Reflects empirical behavioral research. The differentiation between wait and transfer weights aligns with decades of stated-preference research showing that transfer penalties exceed simple waiting-time disutility \citep{jara-diaz2022, yap2024}.
+    
+    \item Avoids double-counting. Because alight edges carry zero weight and transfer edges carry the full transfer penalty, passengers are never penalized twice for the same event.
+    
+    \item Supports sensitivity analysis. The modular weight structure allows researchers to independently vary wait and transfer weights during calibration and sensitivity testing, enabling exploration of how route-choice outcomes change under different behavioral assumptions.
+\end{enumerate}

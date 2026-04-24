@@ -1,0 +1,20 @@
+\section{Three-Layer Graph Architecture}
+
+The simulation employs a three-layer directed graph structure that separates the passenger journey into distinct phases: origin walking, vehicle riding, and destination walking with potential transfers. This architectural design allows transfer penalties to be applied exactly once per transfer event through standard edge weights, eliminating the need for modified Dijkstra implementations or state-tracking during pathfinding.
+
+\begin{itemize}
+    \item \textbf{Layer 1: Start Walk Graph.} The walkable street network is duplicated to create the start walk layer, representing all locations from which a passenger may originate and walk toward a jeepney boarding point. Edges within this layer are bidirectional and weighted by walk distance multiplied by a walk weight coefficient: $w_{start\rightarrow start} = d \times \beta_{walk}$ where $d$ is the edge length in meters and $\beta_{walk}$ is the empirically derived walk weight obtained from the survey.
+    
+    \item \textbf{Layer 2: Jeep Graph.} Each jeepney route is represented as a separate subgraph of unidirectional edges following the route's circular path. Edges within a route are weighted by travel distance multiplied by a ride weight coefficient: $w_{ride\rightarrow ride} = d \times \beta_{ride}$
+    
+    Different jeepney routes have no direct node-to-node connections between them; passengers must alight to the end walk layer and board again via a transfer edge to change routes. This structural separation ensures that transfers are always mediated by the appropriate penalty edges.
+    
+    \item \textbf{Layer 3: End Walk Graph.} The walkable street network is duplicated again to create the end walk layer, representing locations a passenger may reach after alighting from a jeepney. As with the start walk layer, edges are bidirectional with walk-weighted costs: $w_{end\rightarrow end} = d \times \beta_{walk}$
+
+\end{itemize}
+
+\begin{figure}[h]
+    \centering    \includegraphics[width=0.8\textwidth]{chap3/figures/travel_graph_visualization.jpg}
+    \caption{Travel Graph Visualization}
+    \label{fig:iligan_network}
+\end{figure}

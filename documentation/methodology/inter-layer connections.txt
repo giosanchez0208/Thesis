@@ -1,0 +1,21 @@
+\section{Inter-layer Connections}
+
+The three layers are connected by four types of directed edges that encode boarding, alighting, transfer, and direct-walk behaviors:
+
+\begin{itemize}
+    \item \textbf{Wait edges (Start Walk $\rightarrow$ Jeep).} Where a start walk node and a jeep node share the same geographic coordinates (i.e., a passenger can board a jeepney at that location), a directed edge connects the start walk node to the jeep node with a weight equal to the wait weight: $w_{wait} = \beta_{wait}$
+    
+    This weight represents the expected disutility of initial boarding, including anticipated waiting time, and is derived from stated-preference survey responses.
+    
+    \item \textbf{Alight edges (Jeep $\rightarrow$ End Walk).} Where a jeep node and an end walk node share the same coordinates, a directed edge with zero weight connects them: $w_{alight} = 0$
+    
+    The zero weight reflects that alighting itself incurs no additional penalty beyond the in-vehicle travel already accumulated; passengers simply transition from riding to the end walk layer.
+    
+    \item \textbf{Direct edges (Start Walk $\rightarrow$ End Walk).} For origin-destination pairs where the passenger chooses not to use any jeepney (i.e., walks the entire trip), a zero-weight edge connects co-located start walk and end walk nodes: $w_{direct} = 0$
+    
+    This allows the shortest-path algorithm to evaluate pure walking alternatives against jeepney-assisted routes.
+    
+    \item \textbf{Transfer edges (End Walk $\rightarrow$ Jeep).} Where an end walk node and a jeep node share the same coordinates, a directed edge connects them with a weight equal to the transfer weight: $w_{transfer} = \beta_{transfer}$
+    
+    This weight captures the pure transfer penalty (the additional disutility passengers experience when changing vehicles, independent of any walking or waiting time already accounted) calibrated from stated-preference choice experiments.
+\end{itemize}

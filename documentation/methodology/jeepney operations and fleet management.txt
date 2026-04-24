@@ -1,0 +1,31 @@
+\section{Jeepney Operations and Fleet Management}
+The jeepney system comprises multiple routes, each with an assigned fleet of identical vehicles. All jeepneys are characterized by a fixed capacity (typically 16–23 passengers for traditional jeepneys, or up to 24 seated plus 10 standing for modern jeepneys) and operate deterministically along pre-planned circular routes \citep{mendoza2021, inquirer2022}.
+
+\indent{Under the designated-stop regime the model enforces boarding only at defined stop nodes and the fleet scheduling, capacity checks, and boarding rules are implemented with reference to these nodes. This yields clearer service-coverage metrics and simplifies the pheromone-based demand-service gap calculation. If, instead, boarding is informal, route connectivity and vehicle stop-selection must permit opportunistic boarding along route edges; modeling such behaviour increases computational complexity and alters the demand--service gap interpretation because service supply cannot be tallied simply as presence/absence of an edge in a route but must also account for spatially continuous service probability along edges.}
+
+\textbf{Jeepney Speed.} Based on empirical data from Philippine cities, the average operational speed of jeepneys ranges from 9–10 km/h in congested urban areas such as Metro Manila and Baguio City \citep{ranosa2021, changingtransport2021}.
+
+This nominal speed can be modified by congestion effects through the congestion multiplier $\gamma_{\text{congestion}}$. When multiple jeepneys traverse the same edge, the edge's effective ride weight increases, raising the path cost and discouraging over-saturation:
+\begin{equation}
+    v_{jeep}(t) = \frac{v_{jeep}^{nominal}}{\gamma_{\text{congestion}}\!\left(n_{\text{jeep}}\right)}
+\end{equation}
+Where jeep is the number of jeepneys currently on the edge. For simulation purposes, $\gamma_{\text{congestion}}$ increases as more jeeps are assigned to a given edge, introducing higher travel disutility on heavily used corridors. This incentivizes the optimization to distribute jeepney flows more efficiently and discourages the over-concentration of vehicle routes on the same street segments. The result is a self-balancing mechanism that models congestion effects and promotes more robust route designs.
+
+\textbf{Capacity and boarding constraints}. Each jeepney has a fixed capacity C (e.g., 16 passengers for traditional jeepneys). Passengers in WAIT state board a jeepney only if two conditions are met:
+
+\begin{enumerate}[nosep]
+    \item The jeepney will intersect the passenger’s current stop within the next  $\Delta t$.
+    \item The jeepney's current occupancy is less than C (i.e., number of passengers on board < C).
+\end{enumerate}
+
+If both conditions are satisfied, the passenger boards and transitions to RIDE state. If the jeepney is full, the passenger remains in WAIT state and will board the next suitable vehicle. This capacity constraint is critical for realistic simulation, as overloading is a common issue in Philippine public transport, with enforcement agencies recording an average of 16 apprehensions per day for overloading in urban areas \citep{sitchon2023}.
+
+\textbf{Route Operations}. Each jeepney is bound to a single route and continuously cycles along that route throughout the simulation. A route is parameterized by:
+
+\begin{itemize} [nosep]
+    \item An ordered sequence of stop nodes $V_{\text{node}} = \{ v_1,\, v_2,\, \ldots,\, v_m,\, v_1 \}$ (the route is cyclic).
+    \item An edge sequence $E_{route}$ with unidirectional travel costs weighted by ride weight and congestion.
+    \item A fleet size $f$ (number of jeepney vehicles operating on this route).
+\end{itemize}
+
+The Jeep System is queried by the pathfinding algorithm to determine which routes serve which stops and to compute edge weights. It is also updated at each simulation step to advance all vehicles and process boarding/alighting events.

@@ -1,0 +1,17 @@
+\section{Spatial Data Preparation and Network Construction}
+
+This section describes the procedures for constructing the multi-layer graph representation that underlies the agent-based passenger simulation. Building upon the grid-based proof-of-concept framework established in \citet{sanchez2025}, this study extends the network model to accommodate real-world geographic data while introducing a novel three-layer graph architecture that enables standard shortest-path algorithms to handle differentiated boarding and transfer penalties without mid-search modifications.
+
+Respondents will be recruited through an online survey administered via Google Forms, which will be distributed across jeepney user groups, local community pages, and public transport Facebook groups within the study area. Sharing the survey link across different route corridors and user clusters maintains geographic and ridership diversity, allowing the collection of responses from both peak and off-peak travelers to capture variations in travel behavior and user profiles.
+
+The walkable street network of Iligan City is extracted from OpenStreetMap (OSM) using the OSMnx Python package, which retrieves, models, and analyzes geospatial street network data as graph objects compatible with NetworkX \citep{boeing2025a}. OSMnx provides functions to download network data by place name, bounding box, or polygon, returning a topologically corrected directed graph where nodes represent intersections or dead-ends and edges represent street segments with associated length and geometry attributes \citep{boeing2024}. For pedestrian routing, the network is downloaded using the \texttt{network\_type='walk'} parameter, which retrieves all streets and paths accessible to pedestrians while ignoring vehicular one-way restrictions \citep{boeing2025a}.
+
+The resulting graph is simplified using OSMnx's built-in edge simplification and node consolidation algorithms, which remove intermediate nodes that represent only geometric vertices (not true intersections) and merge complex intersection clusters into single nodes \citep{boeing2024}. This preprocessing step yields a parsimonious graph model that more accurately represents the true topology of the street network while reducing computational overhead for subsequent pathfinding operations.
+
+Jeepney route geometries are acquired through route information provided by the city contractor, rather than from GPS traces or OSM relations. Based on these sources, each route is manually constructed and encoded as an ordered sequence of nodes corresponding to stops or waypoints along the route. Because jeepneys in Iligan City typically operate as circular loops, departing from a terminal, following a fixed path through the city, and returning to the same terminal, each route is represented as a unidirectional cycle in the graph. While these manually derived routes do not claim to capture the full operational variability of informal public transport, they serve as baseline reference geometries against which proposed optimized route configurations can later be benchmarked and evaluated.
+
+\begin{figure}[h]
+    \centering    \includegraphics[width=0.8\textwidth]{chap3/figures/iligan_graph_network.png}
+    \caption{Road network graph of Iligan City, Lanao del Norte, Philippines extracted from OpenStreetMap data using OSMnx. The graph represents drivable roads with nodes (intersections) and edges (road segments).}
+    \label{fig:iligan_network}
+\end{figure}
