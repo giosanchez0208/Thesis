@@ -28,11 +28,40 @@ except Exception:  # pragma: no cover - fallback when extension is unavailable
 
 
 _PROCESS_EVALUATOR: SystemicFitnessEvaluator | None = None
+_BATCH_PROCESS_EVALUATOR: SystemicFitnessEvaluator | None = None
 
 
 def _process_worker_init(payload: dict[str, Any]) -> None:
     global _PROCESS_EVALUATOR
     _PROCESS_EVALUATOR = SystemicFitnessEvaluator(
+        passenger_map=payload["passenger_map"],
+        drive_graph_raw=payload["drive_graph_raw"],
+        drive_graph_proj=payload["drive_graph_proj"],
+        place_queries=payload["place_queries"],
+        point_query=payload["point_query"],
+        point_dist=payload["point_dist"],
+        edges_csv=payload["edges_csv"],
+        nodes_csv=payload["nodes_csv"],
+        config_path=payload["config_path"],
+        weight_profile=payload["weight_profile"],
+        unserved_penalty_beta=payload["unserved_penalty_beta"],
+        evaluation_test_mean=payload["evaluation_test_mean"],
+        evaluation_test_std=payload["evaluation_test_std"],
+        min_evaluation_tests=payload["min_evaluation_tests"],
+        max_evaluation_tests=payload["max_evaluation_tests"],
+        background_route_mean=payload["background_route_mean"],
+        background_route_std=payload["background_route_std"],
+        min_noise_routes=payload["min_noise_routes"],
+        max_noise_routes=payload["max_noise_routes"],
+        std_penalty_weight=payload["std_penalty_weight"],
+        max_workers=1,
+        seed=payload["seed"],
+    )
+
+
+def _batch_process_worker_init(payload: dict[str, Any]) -> None:
+    global _BATCH_PROCESS_EVALUATOR
+    _BATCH_PROCESS_EVALUATOR = SystemicFitnessEvaluator(
         passenger_map=payload["passenger_map"],
         drive_graph_raw=payload["drive_graph_raw"],
         drive_graph_proj=payload["drive_graph_proj"],
@@ -77,8 +106,31 @@ def _process_worker_run_chunk(
                 background_seed=background_seed,
                 fitness_seed=fitness_seed,
             )
-        )
+    )
     return results
+
+
+def _batch_process_worker_run(
+    task: tuple[Any, str, str, int, int, int]
+) -> tuple[float, float, float, float, int]:
+    if _BATCH_PROCESS_EVALUATOR is None:
+        raise RuntimeError("Batch process worker was not initialized.")
+    candidate_route, route_id, noise_route_prefix, resolved_batch_size, resolved_n_tests, seed = task
+    result = _BATCH_PROCESS_EVALUATOR.evaluate(
+        candidate_route,
+        n_tests=resolved_n_tests,
+        seed=seed,
+        batch_size=resolved_batch_size,
+        route_id=route_id,
+        noise_route_prefix=noise_route_prefix,
+    )
+    return (
+        float(result.average_gtc),
+        float(result.std_gtc),
+        float(result.average_passenger_gtc_std),
+        float(result.reward),
+        int(result.n_tests),
+    )
 
 
 def _shutdown_process_executor(executor: ProcessPoolExecutor | None) -> None:
@@ -177,6 +229,8 @@ class SystemicFitnessEvaluator:
         self._evaluation_cache: dict[tuple, SystemicFitnessResult] = {}
         self._process_executor: ProcessPoolExecutor | None = None
         self._process_executor_finalizer: weakref.finalize | None = None
+        self._batch_process_executor: ProcessPoolExecutor | None = None
+        self._batch_process_executor_finalizer: weakref.finalize | None = None
         self._process_pool_max_workers = self.max_workers if self.max_workers is not None else (os.cpu_count() or 1)
         self._process_init_payload = {
             "passenger_map": self.passenger_map,
@@ -270,6 +324,20 @@ class SystemicFitnessEvaluator:
             )
         return self._process_executor
 
+    def _get_batch_process_executor(self) -> ProcessPoolExecutor:
+        if self._batch_process_executor is None:
+            self._batch_process_executor = ProcessPoolExecutor(
+                max_workers=self._process_pool_max_workers,
+                initializer=_batch_process_worker_init,
+                initargs=(self._process_init_payload,),
+            )
+            self._batch_process_executor_finalizer = weakref.finalize(
+                self,
+                _shutdown_process_executor,
+                self._batch_process_executor,
+            )
+        return self._batch_process_executor
+
     def close(self) -> None:
         if self._process_executor is not None:
             if self._process_executor_finalizer is not None:
@@ -277,6 +345,12 @@ class SystemicFitnessEvaluator:
                 self._process_executor_finalizer = None
             _shutdown_process_executor(self._process_executor)
             self._process_executor = None
+        if self._batch_process_executor is not None:
+            if self._batch_process_executor_finalizer is not None:
+                self._batch_process_executor_finalizer.detach()
+                self._batch_process_executor_finalizer = None
+            _shutdown_process_executor(self._batch_process_executor)
+            self._batch_process_executor = None
 
     def _evaluate_single_system(
         self,
@@ -425,3 +499,80 @@ class SystemicFitnessEvaluator:
         )
         self._evaluation_cache[cache_key] = result
         return result
+
+    def evaluate_many(
+        self,
+        candidate_routes: Sequence[Any],
+        *,
+        n_tests: int | None = None,
+        seeds: Sequence[int] | None = None,
+        batch_size: int | None = None,
+        route_ids: Sequence[str] | None = None,
+        noise_route_prefix: str = "SYS",
+    ) -> list[SystemicFitnessResult]:
+        routes = list(candidate_routes)
+        if not routes:
+            return []
+
+        rng = np.random.default_rng(self._seed)
+        resolved_n_tests = self._sample_evaluation_count(rng) if n_tests is None else int(n_tests)
+        if resolved_n_tests < 1:
+            raise ValueError("n_tests must be at least 1.")
+
+        resolved_batch_size = self.batch_size if batch_size is None else int(batch_size)
+        resolved_route_ids = list(route_ids) if route_ids is not None else ["CANDIDATE"] * len(routes)
+        if len(resolved_route_ids) != len(routes):
+            raise ValueError("route_ids must match candidate_routes length.")
+
+        if seeds is None:
+            resolved_seeds = [int(rng.integers(0, np.iinfo(np.int32).max)) for _ in routes]
+        else:
+            resolved_seeds = [int(seed) for seed in seeds]
+            if len(resolved_seeds) != len(routes):
+                raise ValueError("seeds must match candidate_routes length.")
+
+        worker_count = min(self._process_pool_max_workers, len(routes))
+        if worker_count == 1 or len(routes) == 1:
+            return [
+                self.evaluate(
+                    route,
+                    n_tests=resolved_n_tests,
+                    seed=resolved_seeds[index],
+                    batch_size=resolved_batch_size,
+                    route_id=resolved_route_ids[index],
+                    noise_route_prefix=noise_route_prefix,
+                )
+                for index, route in enumerate(routes)
+            ]
+
+        executor = self._get_batch_process_executor()
+        tasks = [
+            (
+                route,
+                resolved_route_ids[index],
+                noise_route_prefix,
+                resolved_batch_size,
+                resolved_n_tests,
+                resolved_seeds[index],
+            )
+            for index, route in enumerate(routes)
+        ]
+        batch_results = list(executor.map(_batch_process_worker_run, tasks, chunksize=1))
+        return [
+            SystemicFitnessResult(
+                average_gtc=average_gtc,
+                std_gtc=std_gtc,
+                average_passenger_gtc_std=average_passenger_std,
+                std_passenger_gtc_std=0.0,
+                average_reward=-float(average_gtc + self.std_penalty_weight * std_gtc),
+                std_reward=0.0,
+                reward=reward,
+                n_tests=n_tests_value,
+                per_test_gtc=[],
+                per_test_passenger_gtc_std=[],
+                per_test_reward=[],
+                per_test_background_route_counts=[],
+                per_test_route_results=[],
+            )
+            for average_gtc, std_gtc, average_passenger_std, reward, n_tests_value in batch_results
+        ]

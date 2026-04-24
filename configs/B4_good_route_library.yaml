@@ -1,46 +1,14 @@
 experiment: B4_good_route_library
 higher_is_better: true
-source_part2_config: C:\Users\lifei\OneDrive\Desktop\Thesis\Thesis Repository\Thesis\configs\B4_rejection_sampling.yaml
-run_seed: 2410726804
+run_seed: 1670006087
 risk_aversion_k: 1.0
 robustness_cv_ceiling: 0.2
-route_generator:
-  min_area_m2: 2000000
-  anchor_pool_size: 96
-  max_attempts: 500
-  route_prefix: B4L
-screening:
-  good_percentile: 95.0
-  elite_percentile: 99.0
-  tests: 1
-  background_route_mean: 1
-  background_route_std: 0
-  percentile_threshold: -3720.032388103914
-  elite_threshold: -2930.641711780433
-  mean_plus_2sigma_threshold: -3104.4556514841893
-  robustness_ceiling: 0.2
-validation:
-  tests: 10
-  background_route_mean: 2
-  background_route_std: 1
-library:
-  jsonl_path: C:\Users\lifei\OneDrive\Desktop\Thesis\Thesis Repository\Thesis\results\B4_good_routes\good_routes.jsonl
-  csv_path: C:\Users\lifei\OneDrive\Desktop\Thesis\Thesis Repository\Thesis\results\B4_good_routes\good_routes.csv
-  initial_route_count: 0
-  current_route_count: 0
-  library_refresh_every: 25
-  accepted_this_session: 0
-  attempts_this_session: 4
-  screened_this_session: 4
-  validated_this_session: 0
-  duplicate_hits_this_session: 0
 summary:
-  route_count: 0
-  mean_validation_average_gtc: null
-  mean_validation_std_gtc: null
-  mean_validation_risk_adjusted_score: null
-  std_validation_risk_adjusted_score: null
-  best_route_id: null
-  best_validation_risk_adjusted_score: null
-  best_validation_average_gtc: null
-  best_validation_std_gtc: null
+  route_count: 10000
+  best_route_id: ROUTE000001
+session:
+  attempts_this_session: 9963
+  screened_this_session: 9961
+  validated_this_session: 0
+  duplicate_hits_this_session: 49
+  accepted_this_session: 500
