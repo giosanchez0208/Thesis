@@ -21,7 +21,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 
 from .jeepney_route_env import JeepneyRouteEnv
 from .systemic_fitness_evaluator import SystemicFitnessEvaluator
-from .travel_graph import prune_dead_end_nodes
+from ..travel_graph import prune_dead_end_nodes
 
 try:  # pragma: no cover - notebook detection
     from IPython import get_ipython

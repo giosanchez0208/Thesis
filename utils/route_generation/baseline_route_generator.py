@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
 
-from .passenger_generation import PassengerMap
-from .travel_graph import load_graphs_for_study_area, make_coord_key, node_table_from_graph
+from ..passenger_generation import PassengerMap
+from ..travel_graph import load_graphs_for_study_area, make_coord_key, node_table_from_graph
 from .route_speedups import best_anchor_order
 
 try:

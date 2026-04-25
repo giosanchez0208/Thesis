@@ -19,10 +19,10 @@ import numpy as np
 
 from .baseline_route_generator import BaselineRouteGenerator
 from .jeepney_route_env import RouteFitnessResult, calculate_route_fitness
-from .passenger_generation import PassengerMap
+from ..passenger_generation import PassengerMap
 
 try:  # pragma: no cover - optional compiled acceleration
-    from ._route_speedups import summarize_costs
+    from .._route_speedups import summarize_costs
 except Exception:  # pragma: no cover - fallback when extension is unavailable
     from .route_speedups import summarize_costs
 

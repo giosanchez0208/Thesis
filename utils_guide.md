@@ -2,10 +2,11 @@
 
 ## Overview
 
-The `utils` folder is split into two main areas:
+The `utils` folder is split into three main areas:
 
 - `utils/travel_graph` handles graph construction, routing, and HTML visualization.
 - `utils/passenger_generation` handles passenger origin and destination sampling, jeep motion, and multipassenger simulation.
+- `utils/route_generation` handles baseline route generation, fitness evaluation, RL helpers, and route-spectrum analysis.
 
 The pieces are connected in this order:
 
@@ -20,7 +21,7 @@ The pieces are connected in this order:
 
 ### `utils/__init__.py`
 
-Re-exports the main travel graph and passenger utilities. It exposes:
+Re-exports the main travel graph, passenger, and route-generation utilities. It exposes:
 
 - `TravelGraphManager`
 - `JeepneyRoute`
@@ -44,6 +45,20 @@ Re-exports the travel graph core plus the visualizer:
 - `TravelGraphVisualizer`
 - `visualize_travel_graph`
 - graph construction helpers
+
+### `utils/route_generation/__init__.py`
+
+Re-exports the route-generation stack:
+
+- `BaselineRouteGenerator`
+- `BaselineRoute`
+- `JeepneyRouteEnv`
+- `RouteFitnessResult`
+- `calculate_route_fitness`
+- `SystemicFitnessEvaluator`
+- `SystemicFitnessResult`
+- RL training helpers
+- route-spectrum analysis helpers
 
 ## `utils/travel_graph/travel_graph.py`
 
@@ -182,7 +197,7 @@ What it does:
 This class does not depend on the travel graph. It only supplies plausible passenger origin and destination points.
 `generate_nodes()` also accepts an optional `random_state` for reproducible traffic-biased sampling.
 
-## `utils/baseline_route_generator.py`
+## `utils/route_generation/baseline_route_generator.py`
 
 This module creates the new geometric baseline routes on the physical drivable street network only.
 
@@ -207,7 +222,7 @@ A compact route record containing:
 
 This module is the baseline route-generation entry point for B4 and later RL work.
 
-## `utils/systemic_fitness_evaluator.py`
+## `utils/route_generation/systemic_fitness_evaluator.py`
 
 This module performs the multi-system statistical fitness test for route synergy.
 
@@ -225,7 +240,7 @@ What it does:
 
 Use this when you want to compare routes under stochastic sensitivity analysis rather than a single isolated background system.
 
-## `utils/jeepney_route_env.py`
+## `utils/route_generation/jeepney_route_env.py`
 
 This module provides the Gymnasium-style RL environment for geometric route construction.
 
@@ -248,7 +263,7 @@ State design:
 
 The 3-layer travel graph remains evaluation-only for generalized travel cost scoring.
 
-## `utils/rl_training.py`
+## `utils/route_generation/rl_training.py`
 
 This module contains the PPO training helpers used by B4.
 
@@ -275,7 +290,7 @@ Use this helper when you want the training trail in tabular form without rerunni
 - `training_snapshots.csv` stores the best and worst closed-loop routes with their saved artifact paths
 - `route_snapshots/` stores per-episode HTML/JSON route snapshots plus mirrored CSV summaries for training review
 
-## `utils/route_spectrum_analysis.py`
+## `utils/route_generation/route_spectrum_analysis.py`
 
 This module powers the pre/post notebook analysis for B4A and B4B.
 

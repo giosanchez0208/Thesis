@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import MultiPoint, Polygon
 
-from .passenger_generation import Passenger, PassengerMap, Simulation, SimulationConfig
-from .travel_graph import JeepneyRoute, TravelGraphManager, load_graphs_for_study_area, make_coord_key, node_table_from_graph
+from ..passenger_generation import Passenger, PassengerMap, Simulation, SimulationConfig
+from ..travel_graph import JeepneyRoute, TravelGraphManager, load_graphs_for_study_area, make_coord_key, node_table_from_graph
 
 try:  # pragma: no cover - optional dependency
     import gymnasium as gym
